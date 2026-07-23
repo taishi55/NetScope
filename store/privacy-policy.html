@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NetScope — Privacy Policy</title>
+<style>
+  body { max-width: 44rem; margin: 3rem auto; padding: 0 1.25rem;
+         font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+         color: #1f2328; }
+  h1 { font-size: 1.6rem; } h2 { font-size: 1.15rem; margin-top: 2rem; }
+  code { background: #f4f4f5; padding: .1em .35em; border-radius: 4px; }
+  .date { color: #6b7280; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #16181c; color: #e6e8eb; }
+    code { background: #24272e; }
+    .date { color: #9aa0a6; }
+  }
+</style>
+</head>
+<body>
+<h1>NetScope — Privacy Policy</h1>
+<p class="date"><strong>Last updated: July 23, 2026</strong></p>
+
+<h2>Summary</h2>
+<p>NetScope does not collect, store, transmit, or sell any data. Everything it
+shows you stays in memory on your own machine, inside your own browser.</p>
+
+<h2>What NetScope processes</h2>
+<p>When you press “Start capture” in the NetScope side panel, the extension
+attaches Chrome's own debugging protocol to that one tab and processes its
+network traffic — HTTP requests and responses (URLs, headers, bodies) and
+WebSocket frames — for one purpose only: displaying and searching that traffic
+in the panel, at your request. Chrome shows its standard debugging notice for
+the whole time capture is active, and capture ends when you press Stop, close
+the panel, or close the tab.</p>
+<p>This processing happens entirely locally, in memory:</p>
+<ul>
+  <li>Nothing is sent to the developer or to any third party. The extension
+  makes no network requests of its own and contains no analytics, telemetry,
+  error reporting, or tracking of any kind.</li>
+  <li>Nothing is written to disk. Captured traffic is held in memory only while the
+  panel is open and discarded when capture stops (and on page
+  navigation, unless you enable “Preserve log” for that session).</li>
+  <li>Data leaves the extension only when you explicitly ask it to: clicking a
+  Copy button places text on your clipboard, and the AsyncAPI export saves a
+  file through your browser’s normal download mechanism. Both are entirely
+  under your control.</li>
+</ul>
+
+<h2>Permissions</h2>
+<ul>
+  <li><code>sidePanel</code> — the user interface lives in Chrome's side
+  panel.</li>
+  <li><code>debugger</code> — the capture mechanism (the Chrome DevTools
+  Protocol, the same one DevTools uses). Attached to a single tab only after
+  you press Start, visibly (Chrome shows its debugging notice), and detached
+  on Stop or when the panel closes.</li>
+  <li><code>tabs</code> — reads the active tab's title and URL to label what
+  is being captured.</li>
+  <li><code>clipboardWrite</code> — used only when you click a Copy button
+  (copy as cURL, copy a frame payload, copy the AsyncAPI document).</li>
+</ul>
+<p>NetScope requests no access to website data (no host permissions) and
+injects no scripts into pages.</p>
+
+<h2>Data collection</h2>
+<p>NetScope collects no personal information, no browsing history, no usage
+statistics, and no identifiers. There are no accounts, no cookies set by the
+extension, and no remote code.</p>
+
+<h2>Limited Use</h2>
+<p>NetScope’s handling of any information complies with the Chrome Web Store
+User Data Policy, including its Limited Use requirements. Because no data is
+collected or transferred, there is nothing to sell, share, or use for
+advertising, creditworthiness, or any other purpose.</p>
+
+<h2>Changes</h2>
+<p>If this policy ever changes, the updated version will be published at this
+same URL with a new “Last updated” date. Any change would still have to
+describe truthfully what the published code does.</p>
+
+<h2>Contact</h2>
+<p>Email: [YOUR EMAIL]<br>
+Source code: [YOUR REPOSITORY URL]</p>
+</body>
+</html>
