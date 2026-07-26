@@ -453,6 +453,7 @@ function showDetail(id, tab) {
   ui.detail.classList.remove("hidden");
   for (const tr of ui.rows.children) tr.classList.toggle("sel", tr.dataset.id === String(id));
   renderDetail();
+  notifyAiSelection();
 }
 
 function hideDetail() {
@@ -461,6 +462,11 @@ function hideDetail() {
   document.body.classList.remove("split");
   ui.detail.classList.add("hidden");
   for (const tr of ui.rows.children) tr.classList.remove("sel");
+  notifyAiSelection();
+}
+
+function notifyAiSelection() {
+  if (window.__netscopeAi) window.__netscopeAi.onSelection(selectedId);
 }
 
 function highlightedPre(text) {
@@ -562,6 +568,17 @@ function renderDetail() {
 
   ui.detailActions.replaceChildren();
   if (e.kind === "http") {
+    const ai = window.__netscopeAi;
+    if (ai && ai.isEnabled()) {
+      ui.detailActions.appendChild(
+        actionBtn("Explain", () => ai.startRun({ kind: "explain", entryId: e.id, forceTool: true, maxIterations: 6 }))
+      );
+      if (e.status >= 400 || e.status === 0) {
+        ui.detailActions.appendChild(
+          actionBtn("Debug", () => ai.startRun({ kind: "debug", entryId: e.id, forceTool: true, maxIterations: 10 }))
+        );
+      }
+    }
     ui.detailActions.appendChild(actionBtn("Copy cURL", () => copyText(toCurl(e), "cURL copied")));
     ui.detailActions.appendChild(actionBtn("Copy URL", () => copyText(e.url, "URL copied")));
   } else if (e.kind === "ws-frame") {
@@ -952,6 +969,11 @@ function wireUi() {
   });
 
   ui.clearBtn.addEventListener("click", () => {
+    // An in-flight run would keep citing ids that no longer exist.
+    if (window.__netscopeAi && window.__netscopeAi.isRunning()) {
+      window.__netscopeAi.cancel();
+      toast("Capture cleared — AI run cancelled");
+    }
     if (api) api.clear();
     else {
       entries = [];
@@ -970,6 +992,15 @@ function wireUi() {
   ui.closeDetail.addEventListener("click", hideDetail);
 
   document.addEventListener("keydown", (ev) => {
+    // ev.code, not ev.key: on macOS Option+A produces "å".
+    if (ev.altKey && ev.code === "KeyA" && window.__netscopeAi) {
+      ev.preventDefault();
+      window.__netscopeAi.toggle();
+      return;
+    }
+    // Typing in the AI sidebar must not close the detail pane or steal focus
+    // back to the search box.
+    if (ev.target && ev.target.closest && ev.target.closest("#ai")) return;
     if (ev.key === "Escape") hideDetail();
     if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "f") {
       ev.preventDefault();
@@ -1003,4 +1034,5 @@ window.__netscopeInit = (a) => {
     scheduleRefresh();
   });
   refresh();
+  if (window.__netscopeAi) window.__netscopeAi.attach(api);
 };

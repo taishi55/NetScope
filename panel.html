@@ -42,6 +42,7 @@
       </label>
       <span id="stats"></span>
       <span class="spacer"></span>
+      <button id="aiToggle" title="AI assistant — ask about the captured traffic (Alt/⌥ + A)">AI</button>
       <button id="exportAsync" title="Export captured WebSocket traffic as an AsyncAPI 3.0 skeleton">
         Export AsyncAPI
       </button>
@@ -82,9 +83,110 @@
         </div>
         <div id="detailBody"></div>
       </section>
+
+      <aside id="ai" class="hidden" aria-label="AI assistant">
+        <div id="aiBar">
+          <span id="aiTitle">AI</span>
+          <select id="aiModel" title="Model">
+            <option value="kimi-k3">kimi-k3</option>
+            <option value="kimi-k2.7-code">kimi-k2.7-code</option>
+            <option value="kimi-k2.6">kimi-k2.6</option>
+            <option value="kimi-k2.5">kimi-k2.5</option>
+          </select>
+          <span class="spacer"></span>
+          <span id="aiCtx"></span>
+          <button id="aiSettingsBtn" title="AI settings">&#9881;</button>
+          <button id="aiNewChat" title="New conversation">+</button>
+          <button id="aiClose" title="Close sidebar">&times;</button>
+        </div>
+
+        <div id="aiSetup" class="hidden">
+          <h4>Kimi (Moonshot) API key</h4>
+          <input
+            id="aiKey"
+            type="password"
+            placeholder="sk-…"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <p class="dim">
+            Stored with chrome.storage.local on this machine only — never synced, never sent
+            anywhere but api.moonshot.ai. That store is not encrypted, so anything with read
+            access to your Chrome profile can read it. Prefer a key with a spend cap.
+          </p>
+
+          <label class="row"
+            >Model
+            <select id="aiModelSetting">
+              <option value="kimi-k3">kimi-k3</option>
+              <option value="kimi-k2.7-code">kimi-k2.7-code</option>
+              <option value="kimi-k2.6">kimi-k2.6</option>
+              <option value="kimi-k2.5">kimi-k2.5</option>
+            </select>
+          </label>
+          <label class="row"
+            >Max tool iterations
+            <input id="aiIterations" type="number" min="1" max="20" step="1" />
+          </label>
+          <label class="row"
+            >Reasoning effort
+            <select id="aiEffort">
+              <option value="low">low</option>
+              <option value="medium">medium</option>
+              <option value="high">high</option>
+            </select>
+          </label>
+
+          <label class="chk"
+            ><input type="checkbox" id="aiRedact" /> Mask secrets before sending</label
+          >
+          <label class="chk sub"
+            ><input type="checkbox" id="aiPii" /> Also mask emails, card and SSN patterns</label
+          >
+
+          <label class="chk consent"
+            ><input type="checkbox" id="aiConsent" /> <span id="aiConsentText"></span
+          ></label>
+
+          <div class="actions">
+            <button id="aiSave">Save &amp; enable</button>
+            <button id="aiTest">Test</button>
+            <button id="aiForget">Forget key</button>
+          </div>
+        </div>
+
+        <div id="aiQuick">
+          <button id="aiQuickSummarize">Summarize API structure</button>
+          <button id="aiQuickExplain" disabled>Explain endpoint</button>
+          <button id="aiQuickDebug" disabled>Debug this error</button>
+        </div>
+
+        <div id="aiLog" role="log" aria-live="polite"></div>
+
+        <form id="aiComposer">
+          <textarea
+            id="aiInput"
+            rows="2"
+            spellcheck="false"
+            placeholder="Ask about the captured traffic — Enter to send, Shift+Enter for a newline"
+          ></textarea>
+          <div class="composer-row">
+            <label class="chk" title="Mention the selected row in your question"
+              ><input type="checkbox" id="aiUseSelection" checked /> use selection</label
+            >
+            <span class="spacer"></span>
+            <button id="aiSend" type="submit">Send</button>
+            <button id="aiStop" type="button" class="hidden">Stop</button>
+          </div>
+        </form>
+      </aside>
     </main>
 
     <div id="toast" class="hidden"></div>
+    <script src="ai-tools.js"></script>
+    <script src="ai-client.js"></script>
+    <script src="ai-agent.js"></script>
+    <script src="ai-panel.js"></script>
     <script src="panel.js"></script>
   </body>
 </html>
