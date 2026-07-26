@@ -86,7 +86,12 @@ function harToEntry(req) {
     resBody: "",
     resBodyTruncated: false,
     resBodyBinary: false,
-    resBodyPending: true
+    resBodyPending: true,
+    // Per-phase breakdown, so slow DNS can be told apart from slow TTFB.
+    timings: req.timings || null,
+    serverIP: req.serverIPAddress || "",
+    fromCache: !!(req._fromCache || s.status === 304),
+    httpVersion: s.httpVersion || ""
   };
 }
 

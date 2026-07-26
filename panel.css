@@ -551,3 +551,448 @@ mark {
 .dupe-bar button {
   margin-left: auto;
 }
+
+/* ---------------------------------------------------------- AI sidebar */
+
+#ai.hidden,
+#ai .hidden {
+  display: none;
+}
+
+body.ai #split {
+  grid-template-columns: 1fr minmax(320px, 400px);
+}
+
+body.split.ai #split {
+  grid-template-columns: minmax(220px, 32%) minmax(260px, 1fr) minmax(300px, 380px);
+}
+
+/* Three columns is tight — drop the Type column too. */
+body.split.ai .c-t,
+body.split.ai #rows tr:not(.nav-row) td:nth-child(4) {
+  display: none;
+}
+
+#ai {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border-left: 1px solid var(--border);
+  background: var(--bg);
+}
+
+#aiToggle.on {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-bg);
+}
+
+#aiBar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
+  min-height: 30px;
+  flex: none;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg2);
+}
+
+#aiTitle {
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  color: var(--dim);
+}
+
+#aiBar select {
+  height: 20px;
+  font-size: 10px;
+  padding: 0 4px;
+}
+
+#aiBar button {
+  height: 20px;
+  padding: 0 6px;
+  border: none;
+  background: none;
+  color: var(--dim);
+}
+
+#aiBar button:hover {
+  color: var(--text);
+  background: var(--hover);
+}
+
+#aiCtx {
+  color: var(--dim);
+  font: 10px var(--mono);
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------ settings */
+
+#aiSetup {
+  flex: none;
+  padding: 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg2);
+  max-height: 60%;
+  overflow: auto;
+}
+
+#aiSetup h4 {
+  margin: 0 0 6px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--dim);
+}
+
+#aiSetup p.dim {
+  margin: 6px 0 10px;
+  color: var(--dim);
+  font-size: 11px;
+}
+
+#aiKey {
+  width: 100%;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+  font: 12px var(--mono);
+  outline: none;
+}
+
+#aiKey:focus {
+  border-color: var(--accent);
+}
+
+#aiSetup .row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 6px 0;
+  color: var(--dim);
+}
+
+#aiSetup .row input,
+#aiSetup .row select {
+  width: 120px;
+  height: 22px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 11px;
+}
+
+#aiSetup .chk {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 8px 0;
+  white-space: normal;
+}
+
+#aiSetup .chk.sub {
+  margin-left: 18px;
+}
+
+#aiSetup .chk input {
+  margin-top: 2px;
+  flex: none;
+}
+
+#aiSetup .consent {
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  line-height: 1.5;
+}
+
+#aiSetup.raw .consent {
+  border-color: color-mix(in srgb, var(--warn) 55%, var(--bg));
+  color: var(--warn);
+}
+
+#aiSetup .actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+#aiForget {
+  margin-left: auto;
+  color: var(--err);
+}
+
+/* -------------------------------------------------------- quick actions */
+
+#aiQuick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px;
+  flex: none;
+  border-bottom: 1px solid var(--border);
+}
+
+#aiQuick button {
+  font-size: 10px;
+}
+
+#aiQuick button:disabled,
+#aiComposer button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* ------------------------------------------------------------ transcript */
+
+#aiLog {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px;
+}
+
+.msg {
+  position: relative;
+  margin: 0 0 10px;
+  font-size: 12px;
+}
+
+.msg-role {
+  margin-bottom: 2px;
+  color: var(--dim);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.msg-user .msg-body {
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: var(--bg2);
+  white-space: pre-wrap;
+}
+
+.msg-assistant .msg-body {
+  white-space: pre-wrap;
+}
+
+.msg-assistant .msg-body p,
+.msg-assistant .msg-body ul {
+  margin: 0 0 8px;
+  white-space: normal;
+}
+
+.msg-assistant .msg-body h5 {
+  margin: 10px 0 4px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--dim);
+}
+
+.msg-assistant .msg-body ul {
+  padding-left: 18px;
+}
+
+.msg-assistant .msg-body li {
+  margin: 2px 0;
+}
+
+.msg-assistant .msg-body code {
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--bg3);
+  font: 11px var(--mono);
+}
+
+.msg-assistant .msg-body pre {
+  margin: 0 0 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg2);
+  font: 11px var(--mono);
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.idref {
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px dotted var(--accent);
+  cursor: pointer;
+}
+
+.idref:hover {
+  background: var(--accent-bg);
+}
+
+.msg-copy {
+  height: 18px;
+  padding: 0 5px;
+  font-size: 10px;
+  color: var(--dim);
+  border: none;
+  background: none;
+}
+
+.msg-copy:hover {
+  color: var(--text);
+  background: var(--hover);
+}
+
+.msg-note {
+  margin-top: 2px;
+  color: var(--dim);
+  font-size: 10px;
+}
+
+.msg-status .msg-body {
+  color: var(--dim);
+  font-size: 11px;
+  font-style: italic;
+}
+
+.msg-error .msg-role {
+  color: var(--err);
+}
+
+.msg-error .msg-body {
+  padding: 6px 8px;
+  border: 1px solid color-mix(in srgb, var(--err) 45%, var(--bg));
+  border-radius: 4px;
+  color: var(--err);
+}
+
+.msg-error .msg-body p {
+  margin: 0;
+}
+
+.msg-error .retry {
+  margin-top: 6px;
+  height: 20px;
+  font-size: 10px;
+}
+
+.msg-tool {
+  margin: 0 0 6px;
+}
+
+.tool-head {
+  display: block;
+  width: 100%;
+  height: auto;
+  padding: 3px 6px;
+  border: none;
+  border-radius: 3px;
+  background: none;
+  color: var(--dim);
+  font: 10px var(--mono);
+  text-align: left;
+  white-space: normal;
+  word-break: break-word;
+}
+
+.tool-head:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.tool-body {
+  margin: 4px 0 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg2);
+  font: 10px var(--mono);
+  max-height: 260px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ------------------------------------------------------------- composer */
+
+#aiComposer {
+  flex: none;
+  padding: 6px;
+  border-top: 1px solid var(--border);
+  background: var(--bg2);
+}
+
+#aiInput {
+  width: 100%;
+  padding: 5px 7px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+  font: 12px system-ui, sans-serif;
+  resize: vertical;
+  outline: none;
+}
+
+#aiInput:focus {
+  border-color: var(--accent);
+}
+
+#aiInput:disabled {
+  opacity: 0.5;
+}
+
+.composer-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 5px;
+}
+
+#aiSend {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-bg);
+}
+
+#aiStop {
+  color: var(--err);
+  border-color: color-mix(in srgb, var(--err) 45%, var(--bg));
+}
+
+/* Below ~1000px three columns stop being usable — float the sidebar instead. */
+@media (max-width: 1000px) {
+  body.ai #split {
+    grid-template-columns: 1fr;
+  }
+
+  body.split.ai #split {
+    grid-template-columns: minmax(300px, 46%) minmax(320px, 1fr);
+  }
+
+  body.split.ai .c-t,
+  body.split.ai #rows tr:not(.nav-row) td:nth-child(4) {
+    display: table-cell;
+  }
+
+  #split {
+    position: relative;
+  }
+
+  body.ai #ai {
+    position: absolute;
+    inset: 0 0 0 auto;
+    width: min(420px, 100%);
+    z-index: 5;
+    box-shadow: -6px 0 18px rgba(0, 0, 0, 0.35);
+  }
+}

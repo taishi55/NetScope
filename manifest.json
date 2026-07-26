@@ -2,9 +2,9 @@
   "manifest_version": 3,
   "name": "NetScope \u2013 Search Network Responses & WebSockets",
   "short_name": "NetScope",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "minimum_chrome_version": "111",
-  "description": "DevTools panel: search response bodies and live WebSocket frames, copy as cURL, export captured WS traffic as AsyncAPI 3.0.",
+  "description": "DevTools panel: search response bodies and live WebSocket frames, copy as cURL, export AsyncAPI 3.0, and debug captured traffic with an optional AI assistant.",
   "icons": {
     "16": "icons/icon16.png",
     "32": "icons/icon32.png",
@@ -16,7 +16,11 @@
     "service_worker": "background.js"
   },
   "permissions": [
-    "clipboardWrite"
+    "clipboardWrite",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://api.moonshot.ai/*"
   ],
   "content_scripts": [
     {
