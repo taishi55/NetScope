@@ -88,9 +88,25 @@ every request is one you triggered.
 
 ## Screenshots
 
-![Search inside responses](docs/screenshot-1-search.png)
-![Match highlighting in the response body](docs/screenshot-2-response.png)
-![WebSocket frames captured live](docs/screenshot-3-websockets.png)
+Search a value and see every request that carried it, highlighted in context:
+
+![Searching for a SKU across response bodies and WebSocket frames](docs/screenshot-1-search.png)
+
+Ask why a request failed — the assistant queries the capture and cites the entries it used:
+
+![The AI assistant diagnosing a 422 from the captured traffic](docs/screenshot-2-ai-debug.png)
+
+Or have it map the whole API surface:
+
+![The AI assistant summarizing the captured API surface](docs/screenshot-3-ai-summary.png)
+
+Every WebSocket frame, by direction, with pretty-printed payloads:
+
+![WebSocket frames captured live](docs/screenshot-4-websockets.png)
+
+Replay any request outside the browser:
+
+![Copy as cURL, headers and body included](docs/screenshot-5-curl.png)
 
 ## Install (unpacked)
 

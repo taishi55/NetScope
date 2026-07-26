@@ -78,7 +78,11 @@ body {
 }
 
 #search {
-  flex: 1 1 240px;
+  /* Basis kept below the 240px it wants: flex-wrap breaks the line before
+     shrinking applies, so a smaller basis is what keeps the toolbar on one
+     row at 1280 once the AI button and the match counter are both present.
+     It still grows to max-width when there is room. */
+  flex: 1 1 200px;
   min-width: 200px;
   max-width: 460px;
   height: 24px;
