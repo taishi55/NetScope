@@ -70,11 +70,16 @@ window.__netscopeFlowsUi = (() => {
     } catch (_) {
       flows = [];
     }
-    for (const id of open) {
-      try {
-        runsCache.set(id, await api.rpc("flows.runs", { id }));
-      } catch (_) {}
-    }
+    // Every card's run history, fetched up front: "Copy as Markdown" needs it
+    // and must write the clipboard while the click's activation still holds.
+    await Promise.all(
+      flows.map((f) =>
+        api
+          .rpc("flows.runs", { id: f.id })
+          .then((r) => runsCache.set(f.id, r))
+          .catch(() => {})
+      )
+    );
     if (!editing) render(); // never wipe JSON the user is typing
     renderAlert();
   }
@@ -247,6 +252,9 @@ window.__netscopeFlowsUi = (() => {
         }, "ghost")
       );
       actions.appendChild(btn("Edit", () => startEdit(f), "ghost"));
+      const copyBtn = btn("Copy as Markdown", () => copyMarkdown(f), "ghost");
+      copyBtn.title = "Copy every step, the schedule and the last run as Markdown. Secret values are masked.";
+      actions.appendChild(copyBtn);
       if (window.__netscopeAi) {
         actions.appendChild(
           btn("Ask Kimi", () => window.__netscopeAi.prefill(`Look at my flow “${f.name}” (id ${f.id}) and its recent runs. `, false), "ghost")
@@ -337,6 +345,299 @@ window.__netscopeFlowsUi = (() => {
     load();
   }
 
+  /* -------------------------------------------------------- markdown */
+
+  // A flow as a self-contained Markdown document: what it does, every step
+  // with its request, data passing and conditions, a cURL per HTTP step, the
+  // last run, and the JSON definition. Literal secrets are masked — steps
+  // built from captured requests carry real Authorization/Cookie values, and
+  // Markdown tends to get pasted into docs and chats. Template references like
+  // {{vars.token}} are not secrets and stay as they are.
+
+  const SECRET_HEADER = /^(authorization|proxy-authorization|authentication|cookie|set-cookie|x-api-key|api-key|apikey|x-auth-token|x-access-token|x-session-token|x-csrf-token|x-xsrf-token|x-amz-security-token|x-goog-api-key)$/i;
+  const SECRET_PARAM = /^(token|access_token|id_token|refresh_token|api_key|apikey|password|secret|signature|sig|session|auth)$/i;
+  const SECRET_KEY = /passw|secret|token|api[_-]?key|apikey|credential|private[_-]?key|session[_-]?id|csrf|cookie/i;
+  const hasTemplate = (s) => /\{\{[^}]*\}\}/.test(String(s));
+
+  // Token-shaped literals inside free text (AI prompts, plain-text bodies).
+  function scrubText(text, m) {
+    return String(text)
+      .replace(/\b(Bearer|Basic|Token)\s+(?!\{\{)[A-Za-z0-9._~+/=-]{12,}/g, (_, scheme) => {
+        m.n++;
+        return `${scheme} <masked>`;
+      })
+      .replace(/\b(sk-[A-Za-z0-9_-]{16,}|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35})/g, () => {
+        m.n++;
+        return "<masked>";
+      });
+  }
+
+  function maskValue(v, m) {
+    const s = String(v == null ? "" : v);
+    if (!s || hasTemplate(s)) return s;
+    m.n++;
+    const scheme = /^(Bearer|Basic|Token|Digest)\s+\S/i.exec(s);
+    return `${scheme ? scheme[1] + " " : ""}<masked, ${s.length} chars>`;
+  }
+
+  function maskQuery(qs, m) {
+    return qs
+      .split("&")
+      .map((pair) => {
+        const i = pair.indexOf("=");
+        if (i < 0) return pair;
+        let k = pair.slice(0, i);
+        try {
+          k = decodeURIComponent(k);
+        } catch (_) {}
+        return SECRET_PARAM.test(k) ? pair.slice(0, i + 1) + maskValue(pair.slice(i + 1), m) : pair;
+      })
+      .join("&");
+  }
+
+  // String surgery, not new URL(): URL() would percent-encode {{templates}}.
+  function maskUrl(url, m) {
+    const s = String(url || "");
+    const q = s.indexOf("?");
+    if (q < 0) return s;
+    const hash = s.indexOf("#", q);
+    const qs = hash < 0 ? s.slice(q + 1) : s.slice(q + 1, hash);
+    return s.slice(0, q + 1) + maskQuery(qs, m) + (hash < 0 ? "" : s.slice(hash));
+  }
+
+  function maskJson(v, m) {
+    if (Array.isArray(v)) return v.map((x) => maskJson(x, m));
+    if (v && typeof v === "object") {
+      const out = {};
+      for (const k of Object.keys(v)) {
+        out[k] = SECRET_KEY.test(k) && v[k] != null && typeof v[k] !== "object" ? maskValue(v[k], m) : maskJson(v[k], m);
+      }
+      return out;
+    }
+    return v;
+  }
+
+  function maskBody(body, m) {
+    if (body == null || body === "") return body;
+    if (typeof body !== "string") return maskJson(body, m);
+    const t = body.trim();
+    if (t.startsWith("{") || t.startsWith("[")) {
+      try {
+        return JSON.stringify(maskJson(JSON.parse(t), m));
+      } catch (_) {}
+    }
+    if (/^[^=&\s]+=[^&]*(&[^=&\s]+=[^&]*)*$/.test(t)) return maskQuery(t, m);
+    return scrubText(body, m);
+  }
+
+  function headerList(h) {
+    if (!h) return [];
+    if (Array.isArray(h)) return h.filter((x) => x && x.name).map((x) => ({ name: String(x.name), value: x.value }));
+    return Object.keys(h).map((name) => ({ name, value: h[name] }));
+  }
+
+  function maskHeaders(h, m) {
+    return headerList(h).map((x) => ({ name: x.name, value: SECRET_HEADER.test(x.name) ? maskValue(x.value, m) : String(x.value == null ? "" : x.value) }));
+  }
+
+  // The concrete request an HTTP step describes, secrets masked. Templates
+  // are left in place; they are filled in when the flow runs.
+  function stepRequest(st, m) {
+    if (st.curl) {
+      try {
+        const p = globalThis.__netscopeCurl.parse(st.curl);
+        return { method: p.method, url: maskUrl(p.url, m), headers: maskHeaders(p.headers, m), body: maskBody(p.body, m) };
+      } catch (_) {
+        const masked = String(st.curl).replace(/((?:-H|--header)\s+['"]?)([A-Za-z-]+)(\s*:\s*)([^'"\n]+)/g, (all, a, name, b, value) =>
+          SECRET_HEADER.test(name) ? a + name + b + maskValue(value, m) : all
+        );
+        return { raw: masked };
+      }
+    }
+    let url = st.url || "";
+    if (st.query && typeof st.query === "object") {
+      const qs = Object.keys(st.query)
+        .map((k) => encodeURIComponent(k) + "=" + (hasTemplate(st.query[k]) ? st.query[k] : encodeURIComponent(typeof st.query[k] === "object" ? JSON.stringify(st.query[k]) : String(st.query[k]))))
+        .join("&");
+      if (qs) url += (url.includes("?") ? "&" : "?") + qs;
+    }
+    return {
+      method: String(st.method || "GET").toUpperCase(),
+      url: maskUrl(url, m),
+      headers: maskHeaders(st.headers, m),
+      body: maskBody(st.body, m)
+    };
+  }
+
+  function fence(lang, text) {
+    const s = String(text == null ? "" : text);
+    const longest = (s.match(/`+/g) || []).reduce((n, r) => Math.max(n, r.length), 0);
+    const f = "`".repeat(Math.max(3, longest + 1));
+    return `${f}${lang}\n${s}\n${f}`;
+  }
+
+  const code = (s) => {
+    const t = String(s);
+    return t.includes("`") ? "`` " + t + " ``" : "`" + t + "`";
+  };
+
+  function when(ts) {
+    const d = new Date(ts);
+    const p = (n) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  }
+
+  function flowToMarkdown(f, runs) {
+    const m = { n: 0 };
+    const out = [];
+    const steps = f.steps || [];
+    const last = (runs && runs[0]) || null;
+
+    out.push(`# Flow: ${f.name}`, "");
+    if (f.description) out.push(f.description, "");
+
+    const sched =
+      f.schedule && f.schedule.enabled
+        ? `${scheduleLabel(f)}, in the background while Chrome is open`
+        : "Manual only";
+    out.push(`- **Schedule:** ${sched}`);
+    out.push(`- **Steps:** ${steps.length}`);
+    const vars = maskJson(f.vars || {}, m);
+    if (Object.keys(vars).length) out.push(`- **Starting variables:** ${code(JSON.stringify(vars))}`);
+    if (last) {
+      out.push(`- **Last run:** ${last.ok ? "succeeded" : "failed"} in ${last.ms} ms, ${when(last.startedAt)} (${last.trigger})${last.error ? ` — ${last.error}` : ""}`);
+    } else out.push("- **Last run:** never run");
+    out.push(`- **Flow id:** ${code(f.id || "(unsaved)")}`, "");
+
+    out.push("## Steps", "");
+    steps.forEach((st, i) => {
+      const kind = st.type === "ai" ? "Kimi step" : st.type === "delay" ? "Delay" : "HTTP request";
+      out.push(`### ${i + 1}. ${code(st.id)} — ${kind}${st.name ? ` (${st.name})` : ""}`, "");
+
+      let httpReq = null;
+      if (st.type === "ai") {
+        out.push("Prompt:", "", fence("text", scrubText(st.prompt || "", m)), "");
+      } else if (st.type === "delay") {
+        out.push(`Waits ${Number(st.ms) || 0} ms.`, "");
+      } else {
+        const req = (httpReq = stepRequest(st, m));
+        if (req.raw) {
+          out.push("cURL (could not be parsed, shown as written):", "", fence("bash", req.raw), "");
+        } else {
+          out.push(`**Request:** ${code(req.method + " " + req.url)}`, "");
+          if (req.headers.length) out.push("Headers:", "", fence("http", req.headers.map((h) => `${h.name}: ${h.value}`).join("\n")), "");
+          if (req.body != null && req.body !== "") {
+            let b = req.body;
+            let lang = "text";
+            if (typeof b !== "string") {
+              b = JSON.stringify(b, null, 2);
+              lang = "json";
+            } else {
+              try {
+                b = JSON.stringify(JSON.parse(b), null, 2);
+                lang = "json";
+              } catch (_) {}
+            }
+            out.push("Body:", "", fence(lang, b), "");
+          }
+          if (st.source_entry) out.push(`Built from captured request #${st.source_entry}.`, "");
+        }
+      }
+
+      const notes = [];
+      if (st.extract && typeof st.extract === "object") {
+        for (const k of Object.keys(st.extract)) notes.push(`Saves ${code("{{vars." + k + "}}")} from ${code(st.extract[k])}`);
+      }
+      if (st.when) notes.push(`Runs only when ${code(st.when)}`);
+      if (st.type === "http" || !st.type) notes.push(`Expects status ${st.expect_status ? code(st.expect_status) : "2xx or 3xx"}`);
+      if (st.timeout_ms) notes.push(`Times out after ${st.timeout_ms} ms`);
+      notes.push(st.continue_on_error ? "On failure: continues with the next step" : "On failure: stops the flow");
+      for (const n of notes) out.push("- " + n);
+      out.push("");
+
+      if (httpReq && !httpReq.raw) out.push("As cURL:", "", fence("bash", globalThis.__netscopeCurl.build(httpReq)), "");
+
+      const sr = last && (last.steps || []).find((x) => x.id === st.id);
+      if (sr) {
+        let res;
+        if (sr.skipped) res = "skipped (condition was false)";
+        else if (!sr.ok) res = "failed — " + (sr.error || "unknown error");
+        else res = [sr.status ? String(sr.status) : "ok", sr.ms != null ? `${sr.ms} ms` : ""].filter(Boolean).join(" in ");
+        if (sr.extracted) {
+          const parts = Object.keys(sr.extracted).map((k) => `${k} = ${SECRET_KEY.test(k) ? maskValue(sr.extracted[k], m) : sr.extracted[k]}`);
+          if (parts.length) res += "; saved " + parts.join(", ");
+        }
+        out.push(`Last run: ${res}`, "");
+      } else if (last) out.push("Last run: not reached", "");
+    });
+
+    out.push(
+      "## How values pass between steps",
+      "",
+      "Anything in `{{ }}` is filled in when the flow runs: `{{vars.<name>}}` (starting variables and values saved by `extract`), " +
+        "`{{steps.<id>.status}}`, `{{steps.<id>.body.<path>}}`, `{{steps.<id>.headers.<name>}}`, `{{now}}`, `{{now_iso}}`, `{{today}}`, `{{uuid}}`. " +
+        "Filters: `| json`, `| urlencode`, `| first`, `| last`, `| length`, `| trim`, `| upper`, `| lower`, `| default:x`.",
+      ""
+    );
+
+    const def = JSON.parse(JSON.stringify(f));
+    delete def.lastRun;
+    delete def.createdAt;
+    delete def.updatedAt;
+    def.vars = maskJson(def.vars || {}, { n: 0 });
+    def.steps = (def.steps || []).map((st) => {
+      const s = Object.assign({}, st);
+      if (s.headers) {
+        const masked = {};
+        for (const h of maskHeaders(s.headers, { n: 0 })) masked[h.name] = h.value;
+        s.headers = masked;
+      }
+      if (s.url) s.url = maskUrl(s.url, { n: 0 });
+      if (s.body != null) s.body = maskBody(s.body, { n: 0 });
+      if (s.query && typeof s.query === "object") {
+        const q = {};
+        for (const k of Object.keys(s.query)) q[k] = SECRET_PARAM.test(k) ? maskValue(s.query[k], { n: 0 }) : s.query[k];
+        s.query = q;
+      }
+      if (typeof s.prompt === "string") s.prompt = scrubText(s.prompt, { n: 0 });
+      if (s.curl) {
+        const r = stepRequest(s, { n: 0 });
+        s.curl = r.raw || globalThis.__netscopeCurl.build(r);
+      }
+      return s;
+    });
+    out.push("## Definition (JSON)", "");
+    if (m.n) out.push("Masked values must be filled in before this can be pasted into **New flow**.", "");
+    out.push(fence("json", JSON.stringify(def, null, 2)), "");
+
+    if (m.n) {
+      out.splice(
+        out.indexOf("## Steps"),
+        0,
+        `> ${m.n} secret value${m.n === 1 ? " is" : "s are"} masked (auth headers, cookies, tokens). Open **Edit** in NetScope to see the raw definition.`,
+        ""
+      );
+    }
+    return { text: out.join("\n").replace(/\n{3,}/g, "\n\n").trim() + "\n", masked: m.n };
+  }
+
+  async function copyMarkdown(f) {
+    let runs = runsCache.get(f.id);
+    if (!runs) {
+      try {
+        runs = await api.rpc("flows.runs", { id: f.id });
+        runsCache.set(f.id, runs);
+      } catch (_) {
+        runs = [];
+      }
+    }
+    const { text, masked } = flowToMarkdown(f, runs);
+    const msg = masked
+      ? `Copied “${f.name}” as Markdown, ${masked} secret value${masked === 1 ? "" : "s"} masked`
+      : `Copied “${f.name}” as Markdown`;
+    if (typeof copyText === "function") copyText(text, msg);
+  }
+
   /* ---------------------------------------------------------- editor */
 
   function startEdit(f) {
@@ -424,5 +725,5 @@ window.__netscopeFlowsUi = (() => {
     api.whenReady().then(load);
   }
 
-  return { attach, onShown: load };
+  return { attach, onShown: load, flowToMarkdown };
 })();

@@ -104,6 +104,10 @@ JSON editor:
 - **Schedules** run in the background worker via `chrome.alarms` while Chrome is open, even
   with the original page closed. A scheduled run that fails puts a red `!` on the toolbar
   icon and a notice in the Flows tab. The last 15 runs per flow are kept.
+- **Copy as Markdown** on each flow copies the whole thing as a document: schedule, every
+  step's request (with a cURL), how values pass between steps, the last run's result per
+  step, and the JSON definition. Literal secrets (auth headers, cookies, token fields) are
+  masked; `{{templates}}` stay as written. **Edit** still shows the raw definition.
 
 ![Flows tab with step results from the last run](docs/popup-flows.png)
 
