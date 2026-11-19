@@ -82,6 +82,77 @@ window.__netscopeFlowsUi = (() => {
     schedule: { enabled: false, every_minutes: 60 }
   };
 
+  // A collect → enrich → qualify pipeline: pages a leaderboard, looks up each
+  // trader five at a time, keeps the ones that qualify, survives restarts.
+  const PIPELINE = {
+    name: "Leaderboard → qualified traders",
+    description: "Page through the leaderboard, look up each trader's stats 5 at a time, keep those whose ROI qualifies.",
+    vars: { page: 1, min_roi: 20 },
+    limits: { max_steps: 20000, max_minutes: 30, auto_resume: true },
+    steps: [
+      {
+        id: "pages",
+        type: "repeat",
+        max: 200,
+        until: "{{steps.board.body.has_more}} == false",
+        collect: { save_as: "candidates", value: "{{steps.board.body.rank_list}}", flatten: true, unique_by: "user_id" },
+        steps: [
+          { id: "board", type: "http", method: "GET", url: "https://api.example.com/leaderboard?page={{vars.page}}&size=50", expect_status: "2xx" },
+          { id: "next_page", type: "set", vars: { page: "{{vars.page | add:1}}" } }
+        ]
+      },
+      {
+        id: "enrich",
+        type: "for_each",
+        items: "{{vars.candidates}}",
+        as: "t",
+        max: 10000,
+        concurrency: 5,
+        on_item_error: "continue",
+        steps: [
+          { id: "stats", type: "http", method: "GET", url: "https://api.example.com/traders/{{t.user_id}}/stats" },
+          {
+            id: "qualifies",
+            type: "if",
+            condition: "{{steps.stats.body.roi}} >= {{vars.min_roi}}",
+            then: [
+              {
+                id: "keep",
+                type: "collect",
+                collection: "qualified",
+                items: { user_id: "{{t.user_id}}", rank: "{{t.rank}}", roi: "{{steps.stats.body.roi}}" },
+                key: "user_id",
+                mode: "upsert"
+              }
+            ]
+          }
+        ]
+      },
+      { id: "summary", type: "log", message: "{{collections.qualified | count}} qualified of {{vars.candidates | count}} candidates" }
+    ]
+  };
+
+  const KIND_TEXT = {
+    budget_steps: "used up its step budget",
+    budget_time: "used up its time budget",
+    network: "hit a network error",
+    timeout: "timed out",
+    rate_limited: "was still rate limited (429/503) after retries",
+    http_status: "got an unexpected HTTP status",
+    template: "has a definition error",
+    ai: "had a Kimi step fail",
+    stopped: "was stopped by a stop step",
+    subflow: "had a called flow fail",
+    error: "failed"
+  };
+
+  // "Stopped at enrich[]/stats, item 341 (u4412): got an unexpected HTTP status — 403 …"
+  function failureText(fl) {
+    if (!fl) return "";
+    const item = fl.item && fl.item.index != null ? `, item ${fl.item.index + 1}${fl.item.value ? ` (${String(fl.item.value).slice(0, 60)})` : ""}` : "";
+    return `Stopped at ${fl.step || "?"}${item}: ${KIND_TEXT[fl.kind] || "failed"}${fl.status ? ` (${fl.status})` : ""} — ${String(fl.reason || "").replace(/^step "[^"]*" failed: /, "").slice(0, 200)}`;
+  }
+
   /* ------------------------------------------------------------ data */
 
   async function load() {
@@ -130,6 +201,27 @@ window.__netscopeFlowsUi = (() => {
     }, 300);
   }
 
+  // A running job's checkpoint and collection counts, at most once a second.
+  const progressTimers = new Map();
+  function refreshProgress(id) {
+    if (progressTimers.has(id) || !document.getElementById("view-flows").classList.contains("on") || editing) return;
+    progressTimers.set(
+      id,
+      setTimeout(async () => {
+        progressTimers.delete(id);
+        try {
+          const [cp, colls] = await Promise.all([api.rpc("flows.checkpoint", { id }), api.rpc("flows.collections", { id })]);
+          cpCache.set(id, cp);
+          collCache.set(id, colls || {});
+          if (cp && cp.running) runningSince.set(id, runningSince.get(id) || Date.now());
+          else runningSince.delete(id);
+          if (!editing) render();
+        } catch (_) {}
+      }, 1000)
+    );
+  }
+  const runningSince = new Map();
+
   async function renderAlert() {
     const box = $("flowAlert");
     let alert = null;
@@ -146,7 +238,9 @@ window.__netscopeFlowsUi = (() => {
     box.replaceChildren();
     const p = node("p");
     p.appendChild(node("strong", "", `“${alert.flowName}” failed when it ran by itself (${alert.trigger === "request" ? "page request" : "schedule"})`));
-    p.appendChild(document.createTextNode(` ${typeof fmtAgo === "function" ? fmtAgo(alert.at) : ""}: ${alert.error || "unknown error"}`));
+    p.appendChild(
+      document.createTextNode(` ${typeof fmtAgo === "function" ? fmtAgo(alert.at) : ""}. ${alert.failure ? failureText(alert.failure) : alert.error || "unknown error"}`)
+    );
     box.appendChild(p);
     box.appendChild(
       btn("Dismiss", async () => {
@@ -405,7 +499,18 @@ window.__netscopeFlowsUi = (() => {
       card.appendChild(meta);
 
       const cp = cpCache.get(f.id);
-      if (cp && !cp.active) card.appendChild(pausedBanner(f, cp));
+      if (cp && cp.active && cp.running) card.appendChild(runningBanner(cp));
+      else if (cp && !cp.active) card.appendChild(pausedBanner(f, cp));
+      else {
+        const lastRun = (runsCache.get(f.id) || [])[0];
+        if (lastRun && !lastRun.ok && lastRun.failure) {
+          const box = node("div", "flow-failed");
+          box.appendChild(node("p", "", failureText(lastRun.failure)));
+          const kept = lastRun.preserved && lastRun.preserved.collections ? Object.entries(lastRun.preserved.collections) : [];
+          if (kept.length) box.appendChild(node("p", "hint", "Completed results kept: " + kept.map(([k, n]) => `collections.${k} (${n.toLocaleString()})`).join(", ")));
+          card.appendChild(box);
+        }
+      }
       const colls = collCache.get(f.id) || {};
       if (Object.keys(colls).length) card.appendChild(collectionsBlock(f, colls));
 
@@ -557,10 +662,24 @@ window.__netscopeFlowsUi = (() => {
     load();
   }
 
+  function runningBanner(cp) {
+    const box = node("div", "flow-running");
+    const where = cp.next != null ? `item ${Math.min(cp.next + 1, cp.of || Infinity).toLocaleString()}${cp.of ? ` of ${cp.of.toLocaleString()}` : ""} in ${cp.step}` : `step ${cp.step}`;
+    box.appendChild(node("p", "", `Running — at ${where}${cp.continuations ? `, continuation ${cp.continuations}` : ""}.`));
+    return box;
+  }
+
   function pausedBanner(f, cp) {
     const box = node("div", "flow-paused");
     const where = cp.next != null ? `at item ${(cp.next + 1).toLocaleString()}${cp.of ? ` of ${cp.of.toLocaleString()}` : ""} in ${cp.step}` : `at step ${cp.step}`;
-    const why = cp.reason === "budget" ? "it reached its run budget" : cp.reason === "interrupted" ? "Chrome stopped it" : "a step failed";
+    const why =
+      cp.reason === "budget"
+        ? "it reached its run budget"
+        : cp.reason === "interrupted"
+          ? "Chrome stopped the extension mid-run"
+          : cp.failure
+            ? failureText(cp.failure).replace(/^Stopped at /, "a step failed at ")
+            : "a step failed";
     const p = node("p", "", `Paused ${where} — ${why}.`);
     if (cp.autoResumePending) p.appendChild(document.createTextNode(" Continues by itself in about 30 s."));
     if (cp.continuations) p.appendChild(document.createTextNode(` Continued ${cp.continuations}× so far.`));
@@ -1106,38 +1225,80 @@ window.__netscopeFlowsUi = (() => {
       node(
         "p",
         "hint",
-        "Steps run in order. Use {{steps.<id>.body.field}} or extract + {{vars.name}} to pass values between them. Ask Kimi in Chat for the full syntax."
+        "Steps run in order. Use {{steps.<id>.body.field}} or extract + {{vars.name}} to pass values between them. Check lists every problem before you save. Ask Kimi in Chat for the full syntax."
       )
     );
+    if (editing.isNew) {
+      const ex = node("div", "actions");
+      ex.appendChild(node("span", "hint", "Start from:"));
+      ex.appendChild(btn("Small bot", () => ((editing.flow = JSON.parse(JSON.stringify(TEMPLATE))), renderEditor()), "ghost"));
+      ex.appendChild(btn("Collect & enrich pipeline", () => ((editing.flow = JSON.parse(JSON.stringify(PIPELINE))), renderEditor()), "ghost"));
+      ed.appendChild(ex);
+    }
     const ta = node("textarea");
     ta.spellcheck = false;
     ta.setAttribute("aria-label", "Flow definition (JSON)");
     ta.value = JSON.stringify(editing.flow, null, 2);
+    ta.addEventListener("input", () => {
+      try {
+        editing.flow = JSON.parse(ta.value);
+      } catch (_) {}
+    });
     ed.appendChild(ta);
-    const err = node("p", "err", editing.error || "");
-    err.hidden = !editing.error;
-    ed.appendChild(err);
+    const report = node("div", "flow-check");
+    ed.appendChild(report);
+    const showReport = (errors, warnings, okText) => {
+      report.replaceChildren();
+      if (errors.length) {
+        report.appendChild(node("p", "err", `${errors.length} problem${errors.length === 1 ? "" : "s"} to fix:`));
+        const ul = node("ul", "err-list");
+        for (const e of errors) ul.appendChild(node("li", "", e.replace(/^Invalid flow: /, "")));
+        report.appendChild(ul);
+      }
+      if (warnings.length) {
+        report.appendChild(node("p", "warn", `${warnings.length} warning${warnings.length === 1 ? "" : "s"}:`));
+        const ul = node("ul", "warn-list");
+        for (const w of warnings) ul.appendChild(node("li", "", w));
+        report.appendChild(ul);
+      }
+      if (!errors.length && okText) report.appendChild(node("p", "ok", okText));
+    };
+    const parse = () => {
+      try {
+        return JSON.parse(ta.value);
+      } catch (e) {
+        showReport(["That is not valid JSON: " + e.message], []);
+        return null;
+      }
+    };
     const actions = node("div", "actions");
     actions.appendChild(
       btn("Save flow", async () => {
-        let parsed;
+        const parsed = parse();
+        if (!parsed) return;
         try {
-          parsed = JSON.parse(ta.value);
-        } catch (e) {
-          err.textContent = "That is not valid JSON: " + e.message;
-          err.hidden = false;
-          return;
-        }
-        try {
-          await api.rpc("flows.save", { flow: parsed });
-          say(`Saved “${parsed.name}”`);
+          const saved = await api.rpc("flows.save", { flow: parsed });
+          const w = (saved && saved.warnings) || [];
+          say(`Saved “${parsed.name}”${w.length ? ` with ${w.length} warning${w.length === 1 ? "" : "s"} — see Edit` : ""}`);
           editing = null;
           load();
         } catch (e) {
-          err.textContent = e.message;
-          err.hidden = false;
+          const list = String(e.message).replace(/^Invalid flow: /, "").split("; ");
+          showReport(list, []);
         }
       }, "primary")
+    );
+    actions.appendChild(
+      btn("Check", async () => {
+        const parsed = parse();
+        if (!parsed) return;
+        try {
+          const r = await api.rpc("flows.validate", { flow: parsed });
+          showReport(r.errors, r.warnings, "No problems found.");
+        } catch (e) {
+          showReport([e.message], []);
+        }
+      })
     );
     actions.appendChild(
       btn("Cancel", () => {
@@ -1164,6 +1325,7 @@ window.__netscopeFlowsUi = (() => {
     });
     api.subscribe((type, msg) => {
       if (type === "flows-changed") scheduleLoad();
+      if (type === "flow-progress" && msg) refreshProgress(msg.flowId);
       if (type === "flow-step" && msg && live.has(msg.flowId)) {
         const arr = live.get(msg.flowId);
         const i = arr.findIndex((x) => x.id === msg.step.id);

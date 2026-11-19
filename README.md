@@ -63,7 +63,7 @@ Things to try:
 | `get_capture_summary`, `list_endpoints`, `list_requests`, `search_traffic` | Orient in the capture, find requests |
 | `get_request`, `describe_json`, `get_websocket_frames`, `compare_requests`, `get_curl` | Drill into one request or diff two |
 | `http_request` | Send a request from a cURL, a captured request (`from_id`, real headers copied locally) or a URL, with overrides |
-| `save_flow`, `run_flow`, `list_flows`, `get_flow`, `delete_flow` | Build, test, schedule and manage flows |
+| `validate_flow`, `save_flow`, `run_flow`, `list_flows`, `get_flow`, `get_collection`, `delete_flow` | Check, build, test (in the background for big jobs), schedule and manage flows; read their collections |
 
 ### Staying under Kimi's rate limits
 
@@ -182,6 +182,26 @@ For jobs like "collect 180 pages of a ranking, then fetch every user's profile":
   their headers. Use it when an extension replay gets 401/403 or a bot page. These requests are
   logged once and never fire page-request triggers.
 
+- **Checked before saving** — every definition is analyzed as a whole: unknown filters,
+  `{{steps.x}}` pointing at a step that doesn't exist (error) or hasn't run yet (warning), loop
+  names used outside their loop, bad URLs, cURL that won't parse, `set` inside a parallel loop,
+  `repeat` without `until`. **Check** in the editor (and Kimi's `validate_flow`) lists every
+  problem with its step path; **Save** refuses a flow with errors.
+- **Exact failure reports** — a failed run records `kind` (`budget_steps`, `budget_time`,
+  `network`, `timeout`, `rate_limited`, `http_status`, `template`, `ai`, `stopped`, `subflow`),
+  the deepest step path, the loop item (index and value), the HTTP status and URL, and what was
+  kept — stored collections plus partial `collect` lists. The flow card shows it in one line.
+- **Adaptive rate limiting** — no fixed delays while the API answers normally. 429 / 503 are
+  retried 3× honoring `Retry-After`, pause every worker on that host, and halve that host's
+  parallelism, which grows back after a run of successes; 502 / 504 retry 3× and network errors
+  2× with exponential backoff; timeouts and 500s only when `retry.times` says so.
+- **Durable progress** — a run is marked in progress before its first step; checkpoints are
+  written at least every second inside top-level loops and after every top-level step, in one
+  IndexedDB transaction together with collections and memory.
+  `auto_resume` is on by default, and a watchdog alarm resumes a run whose worker Chrome
+  stopped, with the popup closed. Kimi can start a full job with `run_flow {background: true}`
+  after testing a small sample.
+
 - **Templates** — `{{vars.x}}`, `{{state.x}}`, `{{steps.<id>.body.<path>}}` / `.status` /
   `.headers.<name>`, `{{item.x}}` (or the loop's `as` name), `{{loop.index}}`,
   `{{trigger.body.<path>}}`, `{{now}}`, `{{uuid}}` and more. Filters transform values:
@@ -255,9 +275,10 @@ net-hook.js ─postMessage─▶ content.js ─sendMessage─▶ background.js �
 - `<all_urls>` content scripts and host permission — the capture hook must be in place on
   whichever page you debug, and the request runner and flows must reach whichever API you
   point them at.
-- `storage`, `unlimitedStorage` — settings, API key, flows, run history and flow collections
-  (`chrome.storage.local`, which collections can grow past 10 MB), chat per tab
-  (`chrome.storage.session`). The capture log lives in the extension's IndexedDB.
+- `storage`, `unlimitedStorage` — settings, API key, flows and run history
+  (`chrome.storage.local`), chat per tab (`chrome.storage.session`). The capture log and flow
+  collections, checkpoints and memory live in the extension's IndexedDB, which
+  `unlimitedStorage` lets grow past the default quota.
 - `alarms` — flow schedules.
 - `scripting` — injects the capture hook into tabs that were open before installing, and runs
   "send from the page" requests inside the site's tab.

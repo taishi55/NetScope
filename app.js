@@ -245,6 +245,7 @@ function onPortMessage(msg) {
       ui.preserve.checked = !!(msg.prefs && msg.prefs.preserve);
       break;
     case "flows-changed":
+    case "flow-progress":
     case "flow-step":
       emit(msg.type, msg);
       break;

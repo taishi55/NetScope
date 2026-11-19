@@ -604,6 +604,7 @@ async function runHttp(input, opts) {
 /* --------------------------------------------------------------- flows */
 
 const running = new Set();
+const progressAt = new Map(); // flow id -> last progress broadcast
 
 // An MV3 worker is stopped after ~30 s without extension API calls; a long
 // flow (pagination, delays, loops) must not be cut off midway.
@@ -681,9 +682,12 @@ async function runFlow(id, opts) {
   const o = Object.assign({}, opts || {});
   if (running.has(id)) throw new Error("this flow is already running");
   // Runs that start by themselves continue a paused job instead of wiping it.
-  if (!o.resume && (o.trigger === "schedule" || o.trigger === "request") && (await Flows.getCheckpoint(id))) o.resume = true;
+  if (!o.resume && (o.trigger === "schedule" || o.trigger === "request") && (await Flows.getCheckpointRaw(id))) o.resume = true;
   running.add(id);
   holdWorker(true);
+  // Watchdog: alarms survive the worker being stopped. If Chrome kills this
+  // worker mid-run, the next tick finds the run gone and resumes it.
+  chrome.alarms.create("watch:" + id, { delayInMinutes: 0.5, periodInMinutes: 0.5 });
   const tabId = Number.isInteger(o.tabId) ? o.tabId : o.trigger_data && Number.isInteger(o.trigger_data.tab_id) ? o.trigger_data.tab_id : undefined;
   try {
     const run = await Flows.run(id, {
@@ -695,7 +699,14 @@ async function runFlow(id, opts) {
         runHttp(req, { tabId, source: "flow", timeoutMs: step && step.timeout_ms, context: step && step.context === "page" ? "page" : "extension" }),
       ai: aiForFlows,
       onStep: (sr) => {
-        if (Number.isInteger(o.tabId)) broadcast(o.tabId, { type: "flow-step", flowId: id, step: sr });
+        if (Number.isInteger(tabId)) broadcast(tabId, { type: "flow-step", flowId: id, step: sr });
+        // Every open Flows tab shows a running job's progress, not just the
+        // tab that started it (background jobs, schedules, triggers).
+        const now = Date.now();
+        if (now - (progressAt.get(id) || 0) > 1000) {
+          progressAt.set(id, now);
+          broadcastAll({ type: "flow-progress", flowId: id });
+        }
       }
     });
     // Out of budget with auto_resume on: carry on in ~30 s (Chrome's minimum
@@ -708,7 +719,9 @@ async function runFlow(id, opts) {
       }
     }
     if (!run.ok && (run.trigger === "schedule" || run.trigger === "request" || run.trigger === "resume")) {
-      await chrome.storage.local.set({ [ALERT_KEY]: { flowId: id, flowName: run.flowName, at: run.startedAt, error: run.error, trigger: run.trigger } });
+      await chrome.storage.local.set({
+        [ALERT_KEY]: { flowId: id, flowName: run.flowName, at: run.startedAt, error: run.error, trigger: run.trigger, failure: run.failure || null }
+      });
       chrome.action.setBadgeBackgroundColor({ color: "#D64545" }).catch(() => {});
       chrome.action.setBadgeText({ text: "!" }).catch(() => {});
     }
@@ -716,10 +729,35 @@ async function runFlow(id, opts) {
   } finally {
     running.delete(id);
     holdWorker(false);
+    chrome.alarms.clear("watch:" + id).catch(() => {});
+    broadcastAll({ type: "flow-progress", flowId: id });
   }
 }
 
+// A checkpoint still marked active while no run is in this worker means the
+// worker that ran it is gone. Mark it interrupted; continue it if allowed.
+async function recoverInterrupted(id) {
+  if (running.has(id)) return false;
+  const raw = await Flows.getCheckpointRaw(id);
+  if (!raw || !raw.active) return false;
+  const cp = await Flows.markCheckpoint(id, { active: false, paused_reason: "interrupted" });
+  const f = await Flows.get(id);
+  if (f && f.limits && f.limits.auto_resume && (cp.continuations || 0) < Flows.MAX_CONTINUATIONS) {
+    runFlow(id, { resume: true, trigger: "resume" }).catch(() => {});
+    return true;
+  }
+  return false;
+}
+
 chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name.startsWith("watch:")) {
+    const id = alarm.name.slice(6);
+    if (!running.has(id)) {
+      chrome.alarms.clear(alarm.name).catch(() => {});
+      recoverInterrupted(id).catch(() => {});
+    }
+    return;
+  }
   if (alarm.name.startsWith("resume:")) {
     const id = alarm.name.slice(7);
     Flows.getCheckpoint(id).then((cp) => cp && runFlow(id, { resume: true, trigger: "resume" }).catch(() => {}));
@@ -739,14 +777,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 // mark it interrupted, and pick it back up if the flow auto-resumes.
 (async () => {
   try {
-    for (const f of await Flows.list()) {
-      const cp = await Flows.getCheckpoint(f.id);
-      if (!cp || !cp.active) continue;
-      cp.active = false;
-      cp.paused_reason = "interrupted";
-      await Flows.setCheckpoint(f.id, cp);
-      if (f.limits && f.limits.auto_resume) chrome.alarms.create("resume:" + f.id, { delayInMinutes: 0.5 });
-    }
+    for (const f of await Flows.list()) await recoverInterrupted(f.id);
   } catch (_) {}
 })();
 
@@ -813,13 +844,24 @@ async function handleRpc(tabId, method, p) {
       await Flows.setCollections(p.id, all);
       return true;
     }
+    case "flows.validate":
+      return (({ valid, errors, warnings }) => ({ valid, errors, warnings }))(Flows.check(p.flow));
+    case "flows.start": {
+      // Long jobs: start now, report through the flow card / get_flow.
+      if (running.has(p.id)) throw new Error("this flow is already running");
+      const cp = p.resume ? await Flows.getCheckpointRaw(p.id) : null;
+      runFlow(p.id, { tabId, vars: p.vars, trigger: p.resume && cp ? "resume" : p.trigger || "manual", resume: !!(p.resume && cp) }).catch(() => {});
+      return { started: true, resumed: !!(p.resume && cp) };
+    }
     case "flows.checkpoint": {
-      const cp = await Flows.getCheckpoint(p.id);
+      const cp = await Flows.getCheckpointRaw(p.id);
       if (!cp) return null;
       return {
         step: cp.stepId,
         next: cp.loop ? cp.loop.next : null,
-        of: cp.loop && cp.loop.items ? cp.loop.items.length : null,
+        of: cp.loop ? cp.loop.itemsCount || (cp.loop.items ? cp.loop.items.length : null) : null,
+        failure: cp.failure || null,
+        running: running.has(p.id),
         kind: cp.loop ? cp.loop.kind : null,
         reason: cp.paused_reason || (cp.active ? "running" : ""),
         active: !!cp.active,

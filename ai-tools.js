@@ -1402,12 +1402,32 @@ window.__netscopeAiTools = (() => {
           saved: true,
           flow: flowBrief(saved),
           step_ids: saved.steps.map((s) => s.id),
-          hint: "Run it with run_flow to verify every step before relying on the schedule."
+          warnings: saved.warnings && saved.warnings.length ? saved.warnings : undefined,
+          hint: "Run it with run_flow (a small sample first for big jobs) before relying on the schedule."
         },
-        4000
+        6000
       );
     } catch (err) {
       return JSON.stringify({ error: String(err.message || err) });
+    }
+  }
+
+  // Same arguments as save_flow; checks everything, stores nothing.
+  async function toolValidateFlow(args) {
+    try {
+      const flow = await resolveFlowArgs(args || {});
+      const r = await api.rpc("flows.validate", { flow });
+      return capResult(
+        {
+          valid: r.valid,
+          errors: r.errors,
+          warnings: r.warnings,
+          hint: r.valid ? "Valid. Save it with the same arguments." : "Fix every error, then validate again before saving."
+        },
+        12000
+      );
+    } catch (err) {
+      return JSON.stringify({ valid: false, errors: [String(err.message || err)] });
     }
   }
 
@@ -1428,6 +1448,9 @@ window.__netscopeAiTools = (() => {
       at: new Date(run.startedAt).toISOString(),
       ms: run.ms,
       note: run.note || undefined,
+      failure: run.failure || undefined,
+      preserved: run.preserved || undefined,
+      rate_adapted: run.rate && Object.keys(run.rate).length ? run.rate : undefined,
       paused: run.paused || undefined,
       resumable: run.resumable || undefined,
       progress: run.progress || undefined,
@@ -1440,6 +1463,7 @@ window.__netscopeAiTools = (() => {
         ok: s.ok,
         runs: s.runs > 1 ? s.runs : undefined,
         retries: s.retries || undefined,
+        failed_items: s.failedItems && s.failedItems.length ? s.failedItems.slice(0, 10) : undefined,
         failed_runs: s.runs > 1 && s.failCount ? s.failCount : undefined,
         skipped: s.skipped || undefined,
         status: s.status,
@@ -1487,6 +1511,12 @@ window.__netscopeAiTools = (() => {
   async function toolRunFlow(args) {
     const a = args || {};
     try {
+      if (a.background) {
+        const r = await api.rpc("flows.start", { id: a.id, vars: a.vars, resume: !!a.resume, trigger: "ai" });
+        return JSON.stringify(
+          Object.assign(r, { hint: "Running in the background. Check progress with get_flow (paused_job, recent_runs) or get_collection; the developer sees it on the Flows tab." })
+        );
+      }
       const run = a.resume ? await api.rpc("flows.resume", { id: a.id }) : await api.rpc("flows.run", { id: a.id, vars: a.vars, trigger: "ai" });
       return capResult(runBrief(run), 16000);
     } catch (err) {
@@ -1879,6 +1909,15 @@ window.__netscopeAiTools = (() => {
     {
       type: "function",
       function: {
+        name: "validate_flow",
+        description:
+          "Check a flow without saving it: structure, every {{template}} (unknown filters, steps that don't exist or haven't run yet, loop names used outside their loop), URLs and cURL. Takes the same arguments as save_flow. Call it before save_flow and fix every error it lists.",
+        parameters: { type: "object", properties: {}, additionalProperties: true }
+      }
+    },
+    {
+      type: "function",
+      function: {
         name: "run_flow",
         description: "Run a saved flow now and get each step's status, extracted variables and output. Use it right after save_flow to verify.",
         parameters: {
@@ -1886,7 +1925,12 @@ window.__netscopeAiTools = (() => {
           properties: {
             id: { type: "string" },
             vars: { type: "object", description: "Override variables for this run." },
-            resume: { type: "boolean", description: "Continue the flow's paused run from its checkpoint instead of starting over." }
+            resume: { type: "boolean", description: "Continue the flow's paused run from its checkpoint instead of starting over." },
+            background: {
+              type: "boolean",
+              description:
+                "Start it and return at once instead of waiting — for full-size jobs that take minutes. Verify on a small sample first (e.g. vars that cap pages or items)."
+            }
           },
           required: ["id"],
           additionalProperties: false
@@ -1938,6 +1982,13 @@ window.__netscopeAiTools = (() => {
     }
   ];
 
+  // validate_flow takes exactly save_flow's arguments.
+  (() => {
+    const save = TOOLS.find((t) => t.function.name === "save_flow");
+    const val = TOOLS.find((t) => t.function.name === "validate_flow");
+    if (save && val) val.function.parameters = JSON.parse(JSON.stringify(save.function.parameters));
+  })();
+
   const EXEC = {
     get_capture_summary: toolCaptureSummary,
     list_endpoints: toolListEndpoints,
@@ -1954,12 +2005,13 @@ window.__netscopeAiTools = (() => {
     list_flows: toolListFlows,
     get_flow: toolGetFlow,
     get_collection: toolGetCollection,
+    validate_flow: toolValidateFlow,
     delete_flow: toolDeleteFlow
   };
 
   // Tools whose results come from the network, not the capture: their output
   // does not count against the per-run capture budget.
-  const UNBUDGETED = new Set(["http_request", "save_flow", "run_flow", "list_flows", "get_flow", "get_collection", "delete_flow"]);
+  const UNBUDGETED = new Set(["http_request", "save_flow", "validate_flow", "run_flow", "list_flows", "get_flow", "get_collection", "delete_flow"]);
 
   // Never throws. Every failure becomes a tool result the model can react to,
   // because an exception here would abort the whole run.

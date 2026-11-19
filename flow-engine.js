@@ -53,7 +53,7 @@ globalThis.__netscopeFlows = (() => {
   const RUN_TIME_CAP = 3600000;
   const MAX_CONCURRENCY = 10;
   const MAX_COLLECTION = 100000; // items per persistent collection
-  const CHECKPOINT_EVERY_MS = 2000;
+  const CHECKPOINT_EVERY_MS = 1000; // durable progress at least once a second inside loops
   const MAX_CONTINUATIONS = 200;
   const MAX_SUBFLOW_DEPTH = 3;
   const OUT_MAX = 4000;
@@ -69,6 +69,90 @@ globalThis.__netscopeFlows = (() => {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   /* ------------------------------------------------------------ storage */
+
+  // Big, frequently rewritten data — collections, checkpoints, memory — lives
+  // in IndexedDB, not chrome.storage.local: every storage.local write is
+  // broadcast with its full old and new value to every extension context
+  // (each open popup), which a 15 MB collection rewritten every second would
+  // choke. IndexedDB also makes a checkpoint one atomic transaction.
+  const KV = (() => {
+    if (typeof indexedDB === "undefined") {
+      return {
+        get: async (keys) => chrome.storage.local.get(keys),
+        set: (obj) => chrome.storage.local.set(obj),
+        remove: (keys) => chrome.storage.local.remove(keys)
+      };
+    }
+    let dbp = null;
+    const db = () =>
+      dbp ||
+      (dbp = new Promise((resolve, reject) => {
+        const r = indexedDB.open("netscope-flows", 1);
+        r.onupgradeneeded = () => r.result.createObjectStore("kv");
+        r.onsuccess = () => resolve(r.result);
+        r.onerror = () => {
+          dbp = null;
+          reject(r.error);
+        };
+      }));
+    const tx = async (mode, fn) => {
+      const d = await db();
+      return new Promise((resolve, reject) => {
+        const t = d.transaction("kv", mode);
+        const out = fn(t.objectStore("kv"));
+        t.oncomplete = () => resolve(out);
+        t.onerror = () => reject(t.error);
+        t.onabort = () => reject(t.error);
+      });
+    };
+    return {
+      get: (keys) =>
+        tx("readonly", (st) => {
+          const out = {};
+          for (const k of [].concat(keys)) {
+            const r = st.get(k);
+            r.onsuccess = () => {
+              if (r.result !== undefined) out[k] = r.result;
+            };
+          }
+          return out;
+        }),
+      set: (obj) =>
+        tx("readwrite", (st) => {
+          for (const k of Object.keys(obj)) st.put(obj[k], k);
+        }),
+      remove: (keys) =>
+        tx("readwrite", (st) => {
+          for (const k of [].concat(keys)) st.delete(k);
+        })
+    };
+  })();
+  const KV_IS_IDB = typeof indexedDB !== "undefined";
+
+  // Data written by an earlier version sits in chrome.storage.local: read it
+  // once, move it to the KV store.
+  async function legacyMove(key) {
+    if (!KV_IS_IDB) return undefined;
+    try {
+      const got = await chrome.storage.local.get(key);
+      if (got[key] === undefined) return undefined;
+      await KV.set({ [key]: got[key] });
+      await chrome.storage.local.remove(key);
+      return got[key];
+    } catch (_) {
+      return undefined;
+    }
+  }
+
+  // The flow list and run histories are shared read-modify-write keys; one
+  // queue keeps two writers (two runs finishing, a run and a save) from
+  // overwriting each other's changes.
+  let serialQ = Promise.resolve();
+  const serial = (fn) => {
+    const p = serialQ.then(fn);
+    serialQ = p.catch(() => {});
+    return p;
+  };
 
   async function list() {
     try {
@@ -87,10 +171,23 @@ globalThis.__netscopeFlows = (() => {
     return (await list()).find((f) => f.id === id) || null;
   }
 
+  const stateKey = (id) => "netscope.flowMemory." + id;
+
   async function getState(id) {
     try {
-      const got = await chrome.storage.local.get(STATE_KEY);
-      return Object.assign({}, (got[STATE_KEY] || {})[id] || {});
+      const got = await KV.get(stateKey(id));
+      if (got[stateKey(id)] !== undefined) return Object.assign({}, got[stateKey(id)]);
+      // Earlier versions kept every flow's memory in one storage.local map.
+      return serial(async () => {
+        const old = await chrome.storage.local.get(STATE_KEY);
+        const all = old[STATE_KEY] || {};
+        if (!all[id]) return {};
+        const st = all[id];
+        await KV.set({ [stateKey(id)]: st });
+        delete all[id];
+        await chrome.storage.local.set({ [STATE_KEY]: all });
+        return Object.assign({}, st);
+      });
     } catch (_) {
       return {};
     }
@@ -98,18 +195,15 @@ globalThis.__netscopeFlows = (() => {
 
   async function setState(id, state) {
     try {
-      const got = await chrome.storage.local.get(STATE_KEY);
-      const all = got[STATE_KEY] || {};
-      if (state && Object.keys(state).length) all[id] = state;
-      else delete all[id];
-      await chrome.storage.local.set({ [STATE_KEY]: all });
+      if (state && Object.keys(state).length) await KV.set({ [stateKey(id)]: state });
+      else await KV.remove(stateKey(id));
     } catch (_) {}
   }
 
   async function getCollections(id) {
     try {
-      const got = await chrome.storage.local.get(DATA_PREFIX + id);
-      const d = got[DATA_PREFIX + id];
+      const got = await KV.get(DATA_PREFIX + id);
+      const d = got[DATA_PREFIX + id] !== undefined ? got[DATA_PREFIX + id] : await legacyMove(DATA_PREFIX + id);
       return (d && d.collections) || {};
     } catch (_) {
       return {};
@@ -118,23 +212,56 @@ globalThis.__netscopeFlows = (() => {
 
   async function setCollections(id, collections) {
     const key = DATA_PREFIX + id;
-    if (!collections || !Object.keys(collections).length) await chrome.storage.local.remove(key);
-    else await chrome.storage.local.set({ [key]: { collections } });
+    if (!collections || !Object.keys(collections).length) await KV.remove(key);
+    else await KV.set({ [key]: { collections } });
   }
 
-  async function getCheckpoint(id) {
+  // A checkpoint is two keys: the small, often-rewritten progress record, and
+  // the loop's item list, written once when the loop first checkpoints.
+  const ITEMS_SUFFIX = ".items";
+
+  async function getCheckpointRaw(id) {
     try {
-      const got = await chrome.storage.local.get(CP_PREFIX + id);
-      return got[CP_PREFIX + id] || null;
+      const got = await KV.get(CP_PREFIX + id);
+      return got[CP_PREFIX + id] || (await legacyMove(CP_PREFIX + id)) || null;
     } catch (_) {
       return null;
     }
   }
 
+  // Updates a few fields of the stored progress record (not the items).
+  async function markCheckpoint(id, patch) {
+    const cp = await getCheckpointRaw(id);
+    if (!cp) return null;
+    Object.assign(cp, patch);
+    await KV.set({ [CP_PREFIX + id]: cp }).catch(() => {});
+    return cp;
+  }
+
+  async function getCheckpoint(id) {
+    const cp = await getCheckpointRaw(id);
+    if (cp && cp.loop && !cp.loop.items) {
+      try {
+        const got = await KV.get(CP_PREFIX + id + ITEMS_SUFFIX);
+        cp.loop.items = got[CP_PREFIX + id + ITEMS_SUFFIX] || (await legacyMove(CP_PREFIX + id + ITEMS_SUFFIX)) || [];
+      } catch (_) {
+        cp.loop.items = [];
+      }
+    }
+    return cp;
+  }
+
   async function setCheckpoint(id, cp) {
     try {
-      if (cp) await chrome.storage.local.set({ [CP_PREFIX + id]: cp });
-      else await chrome.storage.local.remove(CP_PREFIX + id);
+      if (cp) {
+        const payload = { [CP_PREFIX + id]: cp };
+        if (cp.loop && cp.loop.items) {
+          payload[CP_PREFIX + id + ITEMS_SUFFIX] = cp.loop.items;
+          cp.loop = Object.assign({}, cp.loop, { itemsCount: cp.loop.items.length });
+          delete cp.loop.items;
+        }
+        await KV.set(payload);
+      } else await KV.remove([CP_PREFIX + id, CP_PREFIX + id + ITEMS_SUFFIX]);
     } catch (_) {}
   }
 
@@ -215,6 +342,7 @@ globalThis.__netscopeFlows = (() => {
 
   function validate(input) {
     const f = clone(input || {});
+    delete f.warnings; // a check result echoed back is never stored
     const errors = [];
     if (!f.name || typeof f.name !== "string") errors.push("name is required");
     if (!Array.isArray(f.steps) || !f.steps.length) errors.push("steps must be a non-empty array");
@@ -246,7 +374,8 @@ globalThis.__netscopeFlows = (() => {
     f.limits = {
       max_steps: Math.min(MAX_EXEC_CAP, Math.max(100, Number(lim.max_steps) || MAX_EXEC)),
       max_minutes: Math.min(RUN_TIME_CAP / 60000, Math.max(1, Number(lim.max_minutes) || RUN_TIME_LIMIT / 60000)),
-      auto_resume: !!lim.auto_resume
+      // On by default: a job that outgrows one run should finish, not stall.
+      auto_resume: lim.auto_resume !== false
     };
     if (errors.length) {
       const err = new Error("Invalid flow: " + errors.join("; "));
@@ -256,8 +385,32 @@ globalThis.__netscopeFlows = (() => {
     return f;
   }
 
+  // Structure (validate) plus meaning (analyze): every problem at once, with
+  // the step it is in, before anything is stored or run.
+  function check(input) {
+    let f;
+    try {
+      f = validate(input);
+    } catch (err) {
+      return { valid: false, errors: err.errors || [err.message], warnings: [] };
+    }
+    const a = analyze(f);
+    return { valid: !a.errors.length, errors: a.errors, warnings: a.warnings, flow: f };
+  }
+
   async function save(input) {
-    const f = validate(input);
+    const c = check(input);
+    if (!c.valid) {
+      const err = new Error("Invalid flow: " + c.errors.join("; "));
+      err.errors = c.errors;
+      throw err;
+    }
+    await serial(() => storeFlow(c.flow));
+    await syncAlarms();
+    return Object.assign({}, c.flow, { warnings: c.warnings });
+  }
+
+  async function storeFlow(f) {
     const flows = await list();
     const now = Date.now();
     const i = f.id ? flows.findIndex((x) => x.id === f.id) : -1;
@@ -274,25 +427,26 @@ globalThis.__netscopeFlows = (() => {
       flows.push(f);
     }
     await writeAll(flows);
-    await syncAlarms();
-    return f;
   }
 
   async function remove(id) {
-    const flows = await list();
-    const next = flows.filter((f) => f.id !== id);
-    await writeAll(next);
-    try {
-      const got = await chrome.storage.local.get(RUNS_KEY);
-      const runs = got[RUNS_KEY] || {};
-      delete runs[id];
-      await chrome.storage.local.set({ [RUNS_KEY]: runs });
-    } catch (_) {}
+    const removed = await serial(async () => {
+      const cur = await list();
+      const next = cur.filter((f) => f.id !== id);
+      await writeAll(next);
+      try {
+        const got = await chrome.storage.local.get(RUNS_KEY);
+        const runs = got[RUNS_KEY] || {};
+        delete runs[id];
+        await chrome.storage.local.set({ [RUNS_KEY]: runs });
+      } catch (_) {}
+      return next.length !== cur.length;
+    });
     await setState(id, null);
     await setCollections(id, null).catch(() => {});
     await setCheckpoint(id, null);
     await syncAlarms();
-    return next.length !== flows.length;
+    return removed;
   }
 
   async function runs(id) {
@@ -304,7 +458,11 @@ globalThis.__netscopeFlows = (() => {
     }
   }
 
-  async function recordRun(run) {
+  function recordRun(run) {
+    return serial(() => recordRunNow(run));
+  }
+
+  async function recordRunNow(run) {
     try {
       const got = await chrome.storage.local.get(RUNS_KEY);
       const all = got[RUNS_KEY] || {};
@@ -388,8 +546,9 @@ globalThis.__netscopeFlows = (() => {
   function flattenList(list, depth) {
     const out = [];
     for (const x of list) {
-      if (Array.isArray(x) && depth > 0) out.push(...flattenList(x, depth - 1));
-      else out.push(x);
+      if (Array.isArray(x) && depth > 0) {
+        for (const y of flattenList(x, depth - 1)) out.push(y); // no spread: huge arrays would overflow the stack
+      } else out.push(x);
     }
     return out;
   }
@@ -659,6 +818,135 @@ globalThis.__netscopeFlows = (() => {
     return true;
   }
 
+  /* ----------------------------------------------------------- analysis */
+
+  // Finds what validate() cannot: references to steps that don't exist (or
+  // haven't run yet), unknown filters, loop names used outside their loop,
+  // URLs that can't work, cURL that won't parse. Errors block saving;
+  // warnings explain likely surprises.
+  function analyze(flow) {
+    const errors = [];
+    const warnings = [];
+    const ids = new Set();
+    const collected = new Set();
+    walk(flow.steps, (st) => {
+      ids.add(st.id);
+      if (st.type === "collect") collected.add(String(st.collection));
+    });
+    const knownFilters = new Set(Object.keys(FILTERS));
+    const done = new Set(); // steps that have run before the point being checked
+    const idsIn = (steps) => {
+      const out = new Set();
+      walk(steps, (st) => out.add(st.id));
+      return out;
+    };
+
+    const checkExpr = (expr, where, scope, soft) => {
+      const parts = expr.split("|").map((x) => x.trim());
+      const head = parts[0];
+      for (const f of parts.slice(1)) {
+        const name = f.split(":")[0].trim();
+        if (!knownFilters.has(name)) errors.push(`${where}: unknown filter "${name}" in {{${expr}}}`);
+      }
+      if (/^(["']).*\1$/.test(head) || /^-?\d+(\.\d+)?$/.test(head)) return;
+      const segs = head.match(/[^.[\]"']+/g) || [];
+      const root = segs[0];
+      if (!root || ["now", "now_iso", "today", "uuid", "vars", "state"].includes(root) || scope.has(root)) return;
+      if (root === "loop") {
+        errors.push(`${where}: {{${head}}} only exists inside a for_each, repeat, filter or map`);
+        return;
+      }
+      if (root === "trigger") {
+        if (!flow.on_request) warnings.push(`${where}: {{${head}}} is empty unless the flow is started by a page request (on_request)`);
+        return;
+      }
+      if (root === "collections") {
+        if (segs[1] && !collected.has(segs[1])) warnings.push(`${where}: collections.${segs[1]} is never written by this flow, so it is empty unless an earlier run filled it`);
+        return;
+      }
+      if (root === "steps") {
+        const id = segs[1];
+        if (!id) return;
+        if (!ids.has(id)) errors.push(`${where}: {{${head}}} refers to step "${id}", which this flow does not have`);
+        else if (!done.has(id) && !soft.has(id)) warnings.push(`${where}: {{${head}}} is used before step "${id}" runs, so it is empty here`);
+        return;
+      }
+      errors.push(`${where}: unknown name "${root}" in {{${head}}} — write vars.${root}, or use it inside a loop that has as: "${root}"`);
+    };
+
+    const scan = (val, where, scope, soft) => {
+      if (typeof val === "string") {
+        for (const m of val.matchAll(TEMPLATE)) checkExpr(m[1], where, scope, soft);
+      } else if (Array.isArray(val)) val.forEach((v) => scan(v, where, scope, soft));
+      else if (val && typeof val === "object") for (const k of Object.keys(val)) scan(val[k], where, scope, soft);
+    };
+
+    const visit = (steps, scope, prefix, soft, parallel) => {
+      for (const st of steps || []) {
+        if (!st || typeof st !== "object") continue;
+        const where = `step "${prefix}${st.id}"`;
+        const t = st.type;
+        scan(st.when, where, scope, soft);
+
+        if (t === "http") {
+          for (const k of ["url", "curl", "headers", "body", "query"]) scan(st[k], where, scope, soft);
+          if (st.url && !/^\s*(https?:\/\/|\{\{)/i.test(String(st.url))) errors.push(`${where}: url must start with http:// or https:// (got "${String(st.url).slice(0, 60)}")`);
+          if (st.curl) {
+            try {
+              globalThis.__netscopeCurl.parse(String(st.curl).replace(TEMPLATE, "x"));
+            } catch (e) {
+              errors.push(`${where}: the cURL command does not parse — ${e.message}`);
+            }
+          }
+        } else if (t === "ai") scan(st.prompt, where, scope, soft);
+        else if (t === "log" || t === "stop") scan(st.message, where, scope, soft);
+        else if (t === "set") {
+          scan(st.vars, where, scope, soft);
+          scan(st.state, where, scope, soft);
+          if (parallel && st.vars) {
+            warnings.push(`${where}: sets vars inside a parallel loop — items finish in any order, so the last one to finish wins. Use collect to gather results instead.`);
+          }
+        } else if (t === "collect") {
+          scan(st.items, where, scope, soft);
+          if (parallel && (st.mode || "append") === "append" && !st.key) {
+            warnings.push(`${where}: appends without a key inside a parallel loop — after a pause or restart a few items run again and would be added twice. Give it key (e.g. "user_id").`);
+          }
+        }
+        else if (t === "run_flow") scan(st.vars, where, scope, soft);
+        else if (t === "filter" || t === "map") {
+          scan(st.items, where, scope, soft);
+          const inner = new Set(scope).add(st.as || "item").add("loop");
+          scan(t === "filter" ? st.where : st.value, where, inner, soft);
+        } else if (t === "for_each") {
+          scan(st.items, where, scope, soft);
+          const inner = new Set(scope).add(st.as || "item").add("loop");
+          visit(st.steps, inner, prefix + st.id + "[]/", soft, parallel || (Number(st.concurrency) || 1) > 1);
+          if (st.collect) scan(st.collect.value, where + " collect", inner, soft);
+          if ((Number(st.max) || 100) > 1000 && !(flow.limits && flow.limits.max_steps > MAX_EXEC)) {
+            warnings.push(`${where}: up to ${st.max} items may need more than the default ${MAX_EXEC} step runs — set limits.max_steps, or let it pause and auto-resume`);
+          }
+        } else if (t === "repeat") {
+          const loopSoft = new Set([...soft, ...idsIn(st.steps)]);
+          const inner = new Set(scope).add("loop");
+          if (!st.until && !st.while) warnings.push(`${where}: has no until or while, so it always runs ${st.max || 10} times`);
+          scan(st.while, where, inner, loopSoft);
+          visit(st.steps, inner, prefix + st.id + "[]/", loopSoft, parallel);
+          scan(st.until, where, inner, loopSoft);
+          if (st.collect) scan(st.collect.value, where + " collect", inner, loopSoft);
+        } else if (t === "if") {
+          scan(st.condition, where, scope, soft);
+          visit(st.then, scope, prefix + st.id + ".then/", soft, parallel);
+          visit(st.else, scope, prefix + st.id + ".else/", soft, parallel);
+        }
+        done.add(st.id);
+        if (t === "for_each" || t === "repeat" || t === "if") for (const id of idsIn([st])) done.add(id);
+      }
+    };
+    visit(flow.steps, new Set(), "", new Set(), false);
+    const uniq = (a) => Array.from(new Set(a));
+    return { errors: uniq(errors), warnings: uniq(warnings) };
+  }
+
   /* ---------------------------------------------------------------- run */
 
   function hostOf(u) {
@@ -676,6 +964,36 @@ globalThis.__netscopeFlows = (() => {
     if (!isNaN(n)) return Math.min(120000, Math.max(0, n * 1000));
     const d = Date.parse(h.value);
     return isNaN(d) ? 0 : Math.min(120000, Math.max(0, d - Date.now()));
+  }
+
+  // Per-host parallelism that adapts: starts at the loop's concurrency, halves
+  // on a 429/503, and grows back by one after a run of successes.
+  async function hostAcquire(rt, host, conc) {
+    if (conc <= 1) return null;
+    let g = rt.gates.get(host);
+    if (!g) {
+      g = { limit: conc, max: conc, lowest: conc, inflight: 0, ok: 0, queue: [] };
+      rt.gates.set(host, g);
+    }
+    if (conc > g.max) g.max = conc;
+    while (g.inflight >= g.limit) await new Promise((resolve) => g.queue.push(resolve));
+    g.inflight++;
+    return g;
+  }
+
+  function hostRelease(g, outcome) {
+    if (!g) return;
+    g.inflight--;
+    if (outcome === "limited") {
+      g.limit = Math.max(1, Math.floor(g.limit / 2));
+      g.lowest = Math.min(g.lowest, g.limit);
+      g.ok = 0;
+    } else if (outcome === "ok" && g.limit < g.max && ++g.ok >= g.limit * 2) {
+      g.limit++;
+      g.ok = 0;
+    }
+    const wake = g.queue.splice(0, g.queue.length);
+    for (const w of wake) w(); // each re-checks the limit
   }
 
   function buildHttpRequest(step, ctx) {
@@ -743,6 +1061,17 @@ globalThis.__netscopeFlows = (() => {
   }
 
   class StepFailure extends Error {}
+
+  // kind: budget_steps | budget_time | network | timeout | rate_limited |
+  // http_status | template | ai | stopped | subflow | error
+  function stepFail(kind, message, extra) {
+    const e = new StepFailure(message);
+    e.kind = kind;
+    if (extra) Object.assign(e, extra);
+    return e;
+  }
+
+  const TEMPLATE_ERR = /unknown filter|items must resolve|Invalid URL|cURL|no URL found|needs a value|unterminated/i;
   class StopSignal {
     constructor(ok, message) {
       this.ok = ok;
@@ -803,14 +1132,10 @@ globalThis.__netscopeFlows = (() => {
     const path = prefix ? prefix + "/" + step.id : step.id;
     const r = record(rt, path, step, depth);
     if (++rt.executed > rt.maxExec) {
-      const e = new StepFailure(`stopped: reached this run's budget of ${rt.maxExec} step runs`);
-      e.budget = true;
-      throw e;
+      throw stepFail("budget_steps", `stopped: reached this run's budget of ${rt.maxExec} step runs`, { budget: true, step: path });
     }
     if (Date.now() > rt.deadline) {
-      const e = new StepFailure(`stopped: reached this run's time budget of ${Math.round(rt.timeLimit / 60000)} min`);
-      e.budget = true;
-      throw e;
+      throw stepFail("budget_time", `stopped: reached this run's time budget of ${Math.round(rt.timeLimit / 60000)} min`, { budget: true, step: path });
     }
 
     r.runs++;
@@ -837,8 +1162,11 @@ globalThis.__netscopeFlows = (() => {
         }
       }
     } catch (err) {
-      if (err instanceof StepFailure && err.fromChild) failed = err;
-      else failed = err instanceof StepFailure ? err : new StepFailure(String((err && err.message) || err));
+      if (err instanceof StepFailure) failed = err;
+      else {
+        const msg = String((err && err.message) || err);
+        failed = stepFail(TEMPLATE_ERR.test(msg) ? "template" : "error", msg);
+      }
     }
 
     r.ms += Date.now() - t0;
@@ -859,6 +1187,13 @@ globalThis.__netscopeFlows = (() => {
       const e = new StepFailure(failed.fromChild ? failed.message : `step "${path}" failed: ${failed.message}`);
       e.fromChild = true;
       e.budget = !!failed.budget;
+      // The deepest step, the cause and the item travel up unchanged.
+      e.kind = failed.kind || "error";
+      e.step = failed.step || path;
+      e.reason = failed.reason || failed.message;
+      e.status = failed.status;
+      e.url = failed.url;
+      e.item = failed.item;
       throw e;
     }
     return signal;
@@ -944,6 +1279,7 @@ globalThis.__netscopeFlows = (() => {
             const i = next++;
             if (i >= list.length) return;
             const c = iterCtx(ctx, as, list[i], loopInfo(i, list.length));
+            c.__conc = conc; // the per-host gate starts at the loop's concurrency
             try {
               const sig = await execSteps(step.steps, c, rt, path + "[]", depth + 1);
               settleIter(ctx, c);
@@ -954,10 +1290,14 @@ globalThis.__netscopeFlows = (() => {
               if (step.collect && step.collect.value !== undefined) results[i] = renderDeep(step.collect.value, c);
             } catch (err) {
               settleIter(ctx, c);
+              if (!err.item) err.item = { loop: path, index: i, value: clipOut(list[i]).slice(0, 160) };
               // Run budgets always end the run (it can resume); other item
               // failures may be skipped.
-              if (step.on_item_error === "continue" && !err.budget && !String(err.message).includes("stopped: ")) failures++;
-              else {
+              if (step.on_item_error === "continue" && !err.budget && !String(err.message).includes("stopped: ")) {
+                failures++;
+                if (!r.failedItems) r.failedItems = [];
+                if (r.failedItems.length < 25) r.failedItems.push({ index: i, value: clipOut(list[i]).slice(0, 120), reason: String(err.reason || err.message).slice(0, 200) });
+              } else {
                 fatal = err;
                 return;
               }
@@ -967,7 +1307,11 @@ globalThis.__netscopeFlows = (() => {
           }
         };
         await Promise.all(Array.from({ length: Math.min(conc, Math.max(1, list.length - next)) }, worker));
-        if (fatal) throw fatal;
+        if (fatal) {
+          // Keep what finished: the partial list is still usable after a failure.
+          if (step.collect) ctx.vars[step.collect.save_as || step.id] = shapeList(results.filter((x) => x !== undefined), step.collect);
+          throw fatal;
+        }
 
         let collected = [];
         if (step.collect) {
@@ -1013,6 +1357,11 @@ globalThis.__netscopeFlows = (() => {
             }
             if (step.delay_ms) await sleep(Math.min(Number(step.delay_ms) || 0, 60000));
           }
+        } catch (err) {
+          // Keep the pages gathered so far, and say which pass stopped.
+          if (step.collect) ctx.vars[step.collect.save_as || step.id] = shapeList(results, step.collect);
+          if (!err.item) err.item = { loop: path, index: i, value: `pass ${i + 1}` };
+          throw err;
         } finally {
           ctx.loop = prevLoop;
         }
@@ -1039,7 +1388,7 @@ globalThis.__netscopeFlows = (() => {
       case "stop": {
         const msg = render(String(step.message || ""), ctx);
         r.output = (step.outcome === "fail" ? "stopped the run as failed" : "stopped the run") + (msg ? ": " + msg : "");
-        if (step.outcome === "fail") throw new StepFailure(msg || "stopped by a stop step");
+        if (step.outcome === "fail") throw stepFail("stopped", msg || "stopped by a stop step");
         return new StopSignal(true, msg);
       }
 
@@ -1062,7 +1411,7 @@ globalThis.__netscopeFlows = (() => {
         if (subRt.stateDirty) await setState(sub.id, subCtx.state);
         ctx.steps[step.id] = { body: subCtx.vars, ok };
         r.output = `ran “${sub.name}”` + (ok ? "" : `: ${msg}`);
-        if (!ok) throw new StepFailure(`flow “${sub.name}” failed: ${msg}`);
+        if (!ok) throw stepFail("subflow", `flow “${sub.name}” failed: ${msg}`);
         return null;
       }
 
@@ -1114,7 +1463,7 @@ globalThis.__netscopeFlows = (() => {
       }
 
       case "ai": {
-        if (!rt.ai) throw new StepFailure("AI steps need the Kimi API key set up");
+        if (!rt.ai) throw stepFail("ai", "AI steps need the Kimi API key set up");
         let prompt = render(step.prompt, ctx);
         if (step.json) prompt += "\n\nReply with raw JSON only.";
         const text = await rt.ai(prompt);
@@ -1123,7 +1472,7 @@ globalThis.__netscopeFlows = (() => {
           const t = text.trim().replace(/^```(?:json)?\s*|\s*```$/g, "");
           if (t.startsWith("{") || t.startsWith("[")) body = JSON.parse(t);
         } catch (_) {
-          if (step.json) throw new StepFailure("Kimi did not return valid JSON");
+          if (step.json) throw stepFail("ai", "Kimi did not return valid JSON");
         }
         ctx.steps[step.id] = { text, body, ok: true, status: 200 };
         r.output = clipOut(text);
@@ -1136,22 +1485,34 @@ globalThis.__netscopeFlows = (() => {
         r.method = req.method;
         r.url = req.url;
         const retry = step.retry || {};
-        const times = Math.min(Math.max(0, Number(retry.times) || 0), 8);
-        // 429 / 503 are always retried (3× unless retry.times says otherwise),
-        // honoring Retry-After; the pause applies to every worker hitting that
-        // host, so a parallel loop backs off together instead of hammering.
-        const limitTimes = retry.times != null ? times : 3;
+        const explicit = retry.times != null ? Math.min(Math.max(0, Number(retry.times) || 0), 8) : null;
+        // Adaptive, not blanket: no delay while the API answers normally.
+        //   429 / 503      retried 3× by default, Retry-After honored, every
+        //                  worker on that host pauses, and its parallelism halves
+        //   502 / 504      retried 3× by default with exponential backoff
+        //   network error  retried 2× by default
+        //   timeout / 500  retried only when retry.times says so
         const host = hostOf(req.url);
+        const gateConc = Number(ctx.__conc) || 1;
         let res;
         for (let attempt = 0; ; attempt++) {
           const wait = (rt.hostWait.get(host) || 0) - Date.now();
           if (wait > 0) await sleep(Math.min(wait, 120000));
-          res = await rt.http(req, step);
+          const gate = await hostAcquire(rt, host, gateConc);
+          let outcome = "other";
+          try {
+            res = await rt.http(req, step);
+            outcome = res.status === 429 || res.status === 503 ? "limited" : !res.error && res.status < 500 ? "ok" : "other";
+          } finally {
+            hostRelease(gate, outcome);
+          }
           const bad = res.error || !statusOk(res.status, step.expect_status);
           if (!bad) break;
           const limited = res.status === 429 || res.status === 503;
-          const retryable = limited || res.error || res.status >= 500;
-          if (!retryable || attempt >= (limited ? limitTimes : times)) break;
+          const gateway = res.status === 502 || res.status === 504;
+          const network = !!res.error && !/timed out/i.test(res.error);
+          const allowed = explicit != null ? explicit : limited || gateway ? 3 : network ? 2 : 0;
+          if (!(limited || gateway || res.error || res.status >= 500) || attempt >= allowed) break;
           const backoff = (retryAfterMs(res) || Math.min(60000, (Number(retry.delay_ms) || 1000) * 2 ** attempt)) + Math.floor(Math.random() * 250);
           if (limited) rt.hostWait.set(host, Math.max(rt.hostWait.get(host) || 0, Date.now() + backoff));
           else await sleep(backoff);
@@ -1162,9 +1523,13 @@ globalThis.__netscopeFlows = (() => {
         r.status = res.status;
         if (res.entryId) r.entryId = res.entryId;
         r.output = clipOut(view.body);
-        if (res.error) throw new StepFailure(res.error);
+        if (res.error) throw stepFail(/timed out/i.test(res.error) ? "timeout" : "network", res.error, { url: req.url });
         if (!statusOk(res.status, step.expect_status)) {
-          throw new StepFailure(`unexpected status ${res.status}${step.expect_status ? " (expected " + step.expect_status + ")" : ""}`);
+          throw stepFail(
+            res.status === 429 || res.status === 503 ? "rate_limited" : "http_status",
+            `unexpected status ${res.status}${step.expect_status ? " (expected " + step.expect_status + ")" : ""}${r.retries ? ` after ${r.retries} retr${r.retries === 1 ? "y" : "ies"}` : ""}`,
+            { status: res.status, url: req.url }
+          );
         }
         return null;
       }
@@ -1290,12 +1655,14 @@ globalThis.__netscopeFlows = (() => {
       stateDirty: false,
       subDepth: 0,
       hostWait: new Map(),
+      gates: new Map(),
       coll: store,
       resume: cp && cp.loop ? Object.assign({ stepId: cp.stepId }, cp.loop) : null,
       cpStep: 0,
       checkpoint: () => {}
     };
 
+    let itemsSavedFor = cp && cp.loop ? cp.stepId : null; // the item list is stored once per loop
     const writeCheckpoint = async (loop, nextStep) => {
       if (!persist) return;
       lastCp = Date.now();
@@ -1307,18 +1674,27 @@ globalThis.__netscopeFlows = (() => {
         heartbeat: lastCp,
         stepIndex: nextStep,
         stepId: loop ? loop.stepId : (flow.steps[nextStep] || {}).id,
-        loop: loop ? { kind: loop.kind, items: loop.items, next: loop.next, results: loop.results, failures: loop.failures } : null,
+        loop: loop
+          ? { kind: loop.kind, next: loop.next, results: loop.results, failures: loop.failures, itemsCount: loop.items ? loop.items.length : loop.itemsCount }
+          : null,
         vars: ctx.vars,
         steps: slimSteps(ctx.steps),
         trigger: ctx.trigger,
         trigger_kind: cp ? cp.trigger_kind : rec.trigger
       };
+      // One storage write for progress, results and memory together, so a
+      // crash can never leave a checkpoint pointing past unsaved results.
+      const payload = { [CP_PREFIX + flow.id]: JSON.parse(JSON.stringify(cpNew)) };
+      if (loop && loop.items && itemsSavedFor !== loop.stepId) payload[CP_PREFIX + flow.id + ITEMS_SUFFIX] = loop.items;
+      const dirty = store.dirty();
+      if (dirty) payload[DATA_PREFIX + flow.id] = { collections: store.snapshot() };
       try {
-        await setCheckpoint(flow.id, JSON.parse(JSON.stringify(cpNew)));
-      } catch (_) {}
-      if (store.dirty()) await setCollections(flow.id, store.snapshot()).catch(() => {});
-      if (rt.stateDirty) await setState(flow.id, ctx.state);
-      rt.lastLoop = loop;
+        if (rt.stateDirty) payload[stateKey(flow.id)] = JSON.parse(JSON.stringify(ctx.state || {}));
+        await KV.set(payload);
+        if (payload[CP_PREFIX + flow.id + ITEMS_SUFFIX]) itemsSavedFor = loop.stepId;
+      } catch (_) {
+        if (dirty) for (const name of Object.keys(payload[DATA_PREFIX + flow.id].collections)) store.touch(name); // try again next time
+      }
     };
     // Writes are chained so a slow write can never land after a newer one.
     let cpChain = Promise.resolve();
@@ -1341,13 +1717,18 @@ globalThis.__netscopeFlows = (() => {
       }
     }
 
+    // Mark the run as in progress before any step: if the worker is stopped
+    // during the first (possibly long) step, the watchdog still finds it.
+    if (persist && !cp) await queueCheckpoint(null, 0);
+
     let paused = false;
     try {
       for (let i = startIndex; i < flow.steps.length; i++) {
         rt.cpStep = i;
-        rt.lastLoop = null;
+        // A resumed loop's saved progress stands until the loop makes more.
+        rt.lastLoop = cp && cp.loop && i === startIndex ? Object.assign({ stepId: cp.stepId }, cp.loop) : null;
         const sig = await execStep(flow.steps[i], ctx, rt, "", 1);
-        if (persist && Date.now() - lastCp >= CHECKPOINT_EVERY_MS) await queueCheckpoint(null, i + 1);
+        if (persist) await queueCheckpoint(null, i + 1); // every finished top-level step is durable
         if (sig) {
           if (sig.message) rec.note = sig.message;
           break;
@@ -1355,6 +1736,14 @@ globalThis.__netscopeFlows = (() => {
       }
     } catch (err) {
       const msg = String((err && err.message) || err).slice(0, 500);
+      rec.failure = {
+        kind: (err && err.kind) || "error",
+        step: (err && err.step) || (flow.steps[rt.cpStep] || {}).id,
+        reason: String((err && (err.reason || err.message)) || "").slice(0, 400),
+        status: err && err.status,
+        url: err && err.url,
+        item: err && err.item
+      };
       if (err && err.budget && persist) {
         // Out of budget: not a failure. Save where we are so it can go on.
         paused = true;
@@ -1364,9 +1753,13 @@ globalThis.__netscopeFlows = (() => {
       } else {
         rec.ok = false;
         rec.error = msg;
-        // Keep progress made inside a big loop: "Resume" picks up from there.
+        // Keep progress made inside a big loop — or carried over from an
+        // earlier run — so "Resume" picks up from there.
         if (persist && rt.lastLoop && rt.lastLoop.next > 0) {
           await queueCheckpoint(rt.lastLoop, rt.cpStep);
+          rec.resumable = true;
+        } else if (persist && cp) {
+          await queueCheckpoint(cp.loop ? Object.assign({ stepId: cp.stepId }, cp.loop) : null, rt.cpStep);
           rec.resumable = true;
         }
       }
@@ -1375,12 +1768,13 @@ globalThis.__netscopeFlows = (() => {
     await cpChain;
     if (persist) {
       if (paused || rec.resumable) {
-        const saved = await getCheckpoint(flow.id);
+        const saved = await getCheckpointRaw(flow.id);
         if (saved) {
           saved.active = false;
           saved.paused_reason = paused ? "budget" : "failed";
-          await setCheckpoint(flow.id, saved);
-          rec.progress = saved.loop ? { step: saved.stepId, next: saved.loop.next, of: (saved.loop.items || []).length || null } : { step: saved.stepId };
+          saved.failure = rec.failure;
+          await KV.set({ [CP_PREFIX + flow.id]: saved }).catch(() => {});
+          rec.progress = saved.loop ? { step: saved.stepId, next: saved.loop.next, of: saved.loop.itemsCount || null } : { step: saved.stepId };
         }
       } else await setCheckpoint(flow.id, null);
       if (store.dirty()) await setCollections(flow.id, store.snapshot()).catch(() => {});
@@ -1399,6 +1793,15 @@ globalThis.__netscopeFlows = (() => {
     rec.collections = {};
     const view = store.view({});
     for (const k of Object.keys(view)) rec.collections[k] = view[k].length;
+    // What survives a failure or pause: stored collections and partial lists.
+    if (!rec.ok || rec.paused) {
+      rec.preserved = { collections: rec.collections, partial_vars: [] };
+      walk(flow.steps, (st) => {
+        if (st.collect && ctx.vars[st.collect.save_as || st.id] !== undefined) rec.preserved.partial_vars.push(st.collect.save_as || st.id);
+      });
+    }
+    rec.rate = {};
+    for (const [h, g] of rt.gates) if (g.lowest < g.max) rec.rate[h] = { slowed_to: g.lowest, now: g.limit, of: g.max };
     if (o.record !== false) await recordRun(rec);
     return rec;
   }
@@ -1429,7 +1832,11 @@ globalThis.__netscopeFlows = (() => {
     getCollections,
     setCollections,
     getCheckpoint,
+    getCheckpointRaw,
+    markCheckpoint,
     setCheckpoint,
+    check,
+    analyze,
     MAX_CONTINUATIONS,
     matchesRequest,
     walk,

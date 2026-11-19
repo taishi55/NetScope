@@ -44,7 +44,7 @@ globalThis.__netscopeAiClient = (() => {
     consented: false,
     redact: false,
     redactPii: false,
-    maxIterations: 12,
+    maxIterations: 20, // building, validating and testing a full flow takes a few rounds
     reasoningEffort: "high",
     // Which AI actions wait for a click: "writes" = requests that can change
     // data (POST/PUT/PATCH/DELETE) plus saving or scheduling flows;

@@ -30,8 +30,8 @@ Where it is kept:
   the tab closes, and the whole database is wiped each time the browser starts. Each tab keeps
   at most the last 3,000 entries.
 - **Chat** — per tab in `chrome.storage.session`, which Chrome clears when the browser closes.
-- **Flows, their memory, collections and run history** — in `chrome.storage.local` until you
-  delete them. Collections hold whatever data a flow's `collect` steps save from API responses
+- **Flows and run history** — in `chrome.storage.local`; **flow memory, collections and
+  checkpoints** — in the extension's IndexedDB. All stay until you delete them. Collections hold whatever data a flow's `collect` steps save from API responses
   (up to 100,000 items each); clear or export them from the flow card. A paused run keeps a
   checkpoint (its variables and progress) until it finishes or you discard it. A flow
   built from a captured request stores that request's headers, which can include
@@ -105,7 +105,7 @@ this stricter or turn it off in Settings.
 - **alarms** — flow schedules.
 - **scripting** — injects the capture hook into tabs that were already open when you first
   click the icon, and sends "from the page" requests inside the site's tab.
-- **unlimitedStorage** — lets flow collections grow past Chrome's 10 MB default.
+- **unlimitedStorage** — lets flow collections grow past Chrome's default storage quota.
 - **clipboardWrite** — the Copy buttons.
 
 ## Data collection

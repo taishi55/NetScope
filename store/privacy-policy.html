@@ -36,7 +36,7 @@
 <ul>
   <li><strong>Capture log</strong> — in the extension's IndexedDB on your machine, per tab. A new page load starts a fresh log unless you turn on <strong>Keep logs on reload</strong>. A tab's log is deleted when the tab closes, and the whole database is wiped each time the browser starts. Each tab keeps at most the last 3,000 entries.</li>
   <li><strong>Chat</strong> — per tab in <code>chrome.storage.session</code>, which Chrome clears when the browser closes.</li>
-  <li><strong>Flows, their memory, collections and run history</strong> — in <code>chrome.storage.local</code> until you delete them. Collections hold whatever data a flow's <code>collect</code> steps save from API responses (up to 100,000 items each); clear or export them from the flow card. A paused run keeps a checkpoint (its variables and progress) until it finishes or you discard it. A flow built from a captured request stores that request's headers, which can include authorization tokens. Run history keeps step outputs (up to 4 KB each) for the last 15 runs.</li>
+  <li><strong>Flows and run history</strong> — in <code>chrome.storage.local</code>; <strong>flow memory, collections and checkpoints</strong> — in the extension's IndexedDB. All stay until you delete them. Collections hold whatever data a flow's <code>collect</code> steps save from API responses (up to 100,000 items each); clear or export them from the flow card. A paused run keeps a checkpoint (its variables and progress) until it finishes or you discard it. A flow built from a captured request stores that request's headers, which can include authorization tokens. Run history keeps step outputs (up to 4 KB each) for the last 15 runs.</li>
   <li><strong>Settings and API key</strong> — in <code>chrome.storage.local</code> (below).</li>
 </ul>
 <p>Nothing is written outside your Chrome profile. No <code>chrome.debugger</code> is used.</p>
@@ -63,7 +63,7 @@
   <li><strong>storage</strong> — settings, API key, flows and run history (local); chat per tab (session).</li>
   <li><strong>alarms</strong> — flow schedules.</li>
   <li><strong>scripting</strong> — injects the capture hook into tabs that were already open when you first click the icon, and sends "from the page" requests inside the site's tab.</li>
-  <li><strong>unlimitedStorage</strong> — lets flow collections grow past Chrome's 10 MB default.</li>
+  <li><strong>unlimitedStorage</strong> — lets flow collections grow past Chrome's default storage quota.</li>
   <li><strong>clipboardWrite</strong> — the Copy buttons.</li>
 </ul>
 <h2>Data collection</h2>
