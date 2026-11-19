@@ -840,6 +840,7 @@ window.__netscopeAi = (() => {
           model: el.modelSetting.value,
           reasoningEffort: el.effortSetting.value,
           approval: el.approval.value,
+          approvalSet: true,
           tier: el.tier.value,
           maxReply: el.maxReply.value,
           redact: el.redact.checked,

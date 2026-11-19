@@ -14,7 +14,8 @@ needed.
   thinking depth (Quick / Deep / Max → `reasoning_effort` low / high / max).
 - **Call APIs like Postman** — paste a cURL into the chat, or ask Kimi to replay a captured
   request with changes. Requests run from the extension (no CORS), are logged in Traffic
-  tagged *AI*, *You* or *Flow*, and anything that can change data waits for your click.
+  tagged *AI*, *You* or *Flow*. Kimi runs on autopilot by default; Settings can make
+  changes wait for your click.
 - **Flows and bots (Zapier-style, but programmable)** — chain requests, then filter, loop,
   branch, remember state between runs and call Kimi mid-flow. Run on demand, every N
   minutes, or whenever the page makes a matching request — in the background.
@@ -86,10 +87,12 @@ per minute, and on Tier 0 tokens per day. It counts a request as its **input tok
 
 Settings → **Ask before Kimi acts**:
 
-- **For changes** (default) — POST/PUT/PATCH/DELETE requests, saving a flow that has a
-  schedule or write steps, running a flow with write steps, deleting a flow.
+- **Never — autopilot** (default) — Kimi sends requests and saves, runs and deletes flows
+  without asking. Everything it does still appears in the chat and in Traffic.
+- **For changes** — POST/PUT/PATCH/DELETE requests, requests to a host the page never used
+  (a guard against instructions planted in a page's responses), saving a flow that runs by
+  itself or has write steps, running a flow with write steps, deleting a flow.
 - **For every request** — also GETs.
-- **Never** — autopilot.
 
 The approval card shows the exact method, URL, headers (secrets abbreviated) and body.
 

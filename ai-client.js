@@ -46,10 +46,11 @@ globalThis.__netscopeAiClient = (() => {
     redactPii: false,
     maxIterations: 20, // building, validating and testing a full flow takes a few rounds
     reasoningEffort: "high",
-    // Which AI actions wait for a click: "writes" = requests that can change
-    // data (POST/PUT/PATCH/DELETE) plus saving or scheduling flows;
-    // "all" = every outgoing request too; "never" = autopilot.
-    approval: "writes",
+    // Which AI actions wait for a click: "never" = autopilot (default);
+    // "writes" = requests that can change data (POST/PUT/PATCH/DELETE), calls
+    // to hosts the page never used, and flows that run by themselves;
+    // "all" = every outgoing request too.
+    approval: "never",
     tier: "1", // the Kimi account's usage tier; sets the pacer's budget
     maxReply: "auto", // max_completion_tokens: "auto" sizes it from the thinking depth
     stream: true
@@ -84,6 +85,10 @@ globalThis.__netscopeAiClient = (() => {
     if (!MODEL_IDS.includes(s.model)) s.model = DEFAULTS.model;
     if (!EFFORTS.includes(s.reasoningEffort)) s.reasoningEffort = DEFAULTS.reasoningEffort;
     if (!["writes", "all", "never"].includes(s.approval)) s.approval = DEFAULTS.approval;
+    // "writes" was the default before autopilot. Settings saved back then hold
+    // it without anyone having picked it, so they move to the new default once;
+    // a choice saved from Settings from now on (approvalSet) is kept.
+    if (s.approval === "writes" && !s.approvalSet) s.approval = DEFAULTS.approval;
     if (!TIERS[s.tier]) s.tier = DEFAULTS.tier;
     if (!REPLY_CHOICES.includes(String(s.maxReply))) s.maxReply = DEFAULTS.maxReply;
     return s;
