@@ -741,7 +741,7 @@ window.__netscopeAi = (() => {
     el.redact.checked = !!settings.redact;
     el.pii.checked = !!settings.redactPii;
     el.pii.disabled = !settings.redact;
-    el.iter.value = String(settings.maxIterations || 12);
+    el.iter.value = String(settings.maxIterations || CLIENT().DEFAULTS.maxIterations);
     el.consent.checked = !!settings.consented;
     const k3 = CLIENT().isK3(settings.model);
     el.effort.disabled = !k3;
@@ -845,7 +845,8 @@ window.__netscopeAi = (() => {
           maxReply: el.maxReply.value,
           redact: el.redact.checked,
           redactPii: el.pii.checked,
-          maxIterations: Math.min(30, Math.max(1, Number(el.iter.value) || 12)),
+          maxIterations: Math.min(CLIENT().MAX_ITERATIONS, Math.max(1, Number(el.iter.value) || CLIENT().DEFAULTS.maxIterations)),
+          iterationsSet: true,
           consented: true,
           enabled: true
         },

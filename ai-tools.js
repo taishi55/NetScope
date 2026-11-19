@@ -15,7 +15,9 @@
 "use strict";
 
 window.__netscopeAiTools = (() => {
-  const TOTAL_BUDGET = 120000; // cumulative tool-output chars per run
+  // Cumulative capture-tool output per answer. Sized for ~100 tool calls; old
+  // results are elided from the history as it grows, so context stays lean.
+  const TOTAL_BUDGET = 1000000;
   const SCAN_LIMIT = 64 * 1024 * 1024; // max chars search_traffic will read
   const SCAN_CHUNK = 200; // entries between yields, so the panel stays responsive
   const BODY_BUDGET = 18000; // serialized chars a body may occupy inside get_request's 24k cap

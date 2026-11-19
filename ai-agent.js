@@ -21,7 +21,9 @@ window.__netscopeAiAgent = (() => {
     tpd: "tokens per day",
     cooldown: "Kimi asked to slow down"
   };
-  const RUN_TIME_LIMIT = 300000;
+  // One answer may take up to 100+ tool calls (Settings); each Kimi turn with
+  // thinking can take tens of seconds, so allow an hour before wrapping up.
+  const RUN_TIME_LIMIT = 3600000;
 
   const T = () => window.__netscopeAiTools;
   const C = () => window.__netscopeAiClient;
@@ -269,6 +271,8 @@ window.__netscopeAiAgent = (() => {
 
   /* ----------------------------------------------------------- history */
 
+  // Runs before every Kimi turn, not just once per answer: an answer can make
+  // 100+ tool calls, and every turn resends the whole history.
   function pruneHistory() {
     const toolTurns = [];
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -276,22 +280,30 @@ window.__netscopeAiAgent = (() => {
       if (toolTurns.length >= 2) break;
     }
     // Elide content only. Deleting a tool message would orphan its tool_call_id
-    // and the next request would be rejected.
+    // and the next request would be rejected. Older thinking is elided too;
+    // the last two tool turns keep theirs (K3's preserved thinking).
     const keepFrom = toolTurns.length >= 2 ? toolTurns[1] : 0;
     for (let i = 0; i < keepFrom; i++) {
       const m = messages[i];
-      if (m.role === "tool" && m.content && m.content.length > 200 && m.content !== ELIDED) {
-        m.content = ELIDED;
-      }
+      if (m.role === "tool" && m.content && m.content.length > 200 && m.content !== ELIDED) m.content = ELIDED;
+      if (m.role === "assistant" && m.reasoning_content && m.reasoning_content.length > 200) m.reasoning_content = "";
     }
 
+    // Still too big: drop whole earlier exchanges (a user message and all that
+    // followed it), oldest first — never the current question or anything after it.
+    let lastUser = -1;
+    for (let i = messages.length - 1; i > 0; i--) {
+      if (messages[i].role === "user") {
+        lastUser = i;
+        break;
+      }
+    }
     let chars = contextChars();
-    let guard = 0;
-    while (chars > MAX_HISTORY_CHARS && messages.length > 4 && guard++ < 500) {
-      do {
-        const dropped = messages.splice(1, 1)[0];
-        chars -= msgChars(dropped);
-      } while (messages.length > 2 && messages[1].role !== "user" && guard++ < 500);
+    while (chars > MAX_HISTORY_CHARS && lastUser > 1) {
+      let end = 2;
+      while (end < lastUser && messages[end].role !== "user") end++;
+      for (const m of messages.splice(1, end - 1)) chars -= msgChars(m);
+      lastUser -= end - 1;
     }
   }
 
@@ -368,7 +380,7 @@ window.__netscopeAiAgent = (() => {
     h.onUserMessage(seed.display || seed.text);
     pruneHistory();
 
-    const maxIterations = Math.max(spec.maxIterations || 0, settings.maxIterations || 12);
+    const maxIterations = Math.max(spec.maxIterations || 0, settings.maxIterations || C().DEFAULTS.maxIterations);
     let replyCap = client.replyCap(settings, settings.reasoningEffort);
     const onWait = (w) =>
       h.onStatus(`Waiting ${Math.max(1, Math.round(w.ms / 1000))} s to stay under your Kimi ${w.tier} limit (${REASON_TEXT[w.reason] || "rate limit"})…`);
@@ -384,6 +396,7 @@ window.__netscopeAiAgent = (() => {
           finished = true;
           break;
         }
+        if (i > 0) pruneHistory();
         h.onStatus(`thinking… (${i + 1}/${maxIterations})`);
 
         h.onAssistantStart();

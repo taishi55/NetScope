@@ -44,7 +44,7 @@ globalThis.__netscopeAiClient = (() => {
     consented: false,
     redact: false,
     redactPii: false,
-    maxIterations: 20, // building, validating and testing a full flow takes a few rounds
+    maxIterations: 100, // tool calls per answer: room to explore, build, test and fix a whole flow
     reasoningEffort: "high",
     // Which AI actions wait for a click: "never" = autopilot (default);
     // "writes" = requests that can change data (POST/PUT/PATCH/DELETE), calls
@@ -67,6 +67,7 @@ globalThis.__netscopeAiClient = (() => {
     "5": { label: "Tier 5", concurrency: 100, rpm: 300, tpm: 5000000, tpd: 0 }
   };
   const MARGIN = 0.9;
+  const MAX_ITERATIONS = 200; // highest "Max tool calls per answer" accepted
 
   // The reply budget reserved per call. Thinking tokens come out of it too,
   // so deeper thinking gets more room.
@@ -89,6 +90,9 @@ globalThis.__netscopeAiClient = (() => {
     // it without anyone having picked it, so they move to the new default once;
     // a choice saved from Settings from now on (approvalSet) is kept.
     if (s.approval === "writes" && !s.approvalSet) s.approval = DEFAULTS.approval;
+    // Same for the tool-call limit: 12 and 20 were earlier defaults.
+    if ((s.maxIterations === 12 || s.maxIterations === 20) && !s.iterationsSet) s.maxIterations = DEFAULTS.maxIterations;
+    s.maxIterations = Math.min(MAX_ITERATIONS, Math.max(1, Number(s.maxIterations) || DEFAULTS.maxIterations));
     if (!TIERS[s.tier]) s.tier = DEFAULTS.tier;
     if (!REPLY_CHOICES.includes(String(s.maxReply))) s.maxReply = DEFAULTS.maxReply;
     return s;
@@ -575,6 +579,7 @@ globalThis.__netscopeAiClient = (() => {
     EFFORTS,
     TIERS,
     REPLY_CHOICES,
+    MAX_ITERATIONS,
     replyCap,
     tryAcquire,
     release,
