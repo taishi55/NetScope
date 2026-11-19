@@ -255,6 +255,20 @@
             <input id="aiIterations" type="number" min="1" max="30" step="1" />
           </label>
 
+          <h4>Rate limits</h4>
+          <label class="field">Your Kimi account tier
+            <select id="aiTier"></select>
+          </label>
+          <label class="field">Max reply length
+            <select id="aiMaxReply"></select>
+          </label>
+          <p class="hint">
+            Kimi counts every request against your per-minute limit as its input plus the max reply
+            length, whatever the reply really uses. NetScope keeps both small and spaces requests
+            out to stay under your tier, waiting a few seconds instead of failing. Your tier is shown
+            at platform.kimi.ai/console; recharging raises it.
+          </p>
+
           <label class="chk"><input type="checkbox" id="aiRedact" /> Mask secrets before sending to Kimi</label>
           <label class="chk sub"><input type="checkbox" id="aiPii" /> Also mask emails, card and SSN patterns</label>
 

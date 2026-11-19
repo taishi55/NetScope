@@ -11,7 +11,16 @@
 
 window.__netscopeAiAgent = (() => {
   const ELIDED = '{"note":"tool result elided to save context"}';
-  const MAX_HISTORY_CHARS = 400000;
+  // Every turn resends the whole conversation, and Kimi's per-minute limit
+  // counts it each time — keep the history lean (~45k tokens).
+  const MAX_HISTORY_CHARS = 150000;
+  const REASON_TEXT = {
+    tpm: "tokens per minute",
+    rpm: "requests per minute",
+    concurrency: "requests at once",
+    tpd: "tokens per day",
+    cooldown: "Kimi asked to slow down"
+  };
   const RUN_TIME_LIMIT = 300000;
 
   const T = () => window.__netscopeAiTools;
@@ -346,6 +355,11 @@ window.__netscopeAiAgent = (() => {
     pruneHistory();
 
     const maxIterations = Math.max(spec.maxIterations || 0, settings.maxIterations || 12);
+    let replyCap = client.replyCap(settings, settings.reasoningEffort);
+    const onWait = (w) =>
+      h.onStatus(`Waiting ${Math.max(1, Math.round(w.ms / 1000))} s to stay under your Kimi ${w.tier} limit (${REASON_TEXT[w.reason] || "rate limit"})…`);
+    const onRetry = (err, n, max, ms) =>
+      h.onStatus(`${err.message} Trying again in ${Math.max(1, Math.round(ms / 1000))} s (${n}/${max})…`);
     let finished = false;
     let reason = "complete";
 
@@ -367,10 +381,18 @@ window.__netscopeAiAgent = (() => {
           signal: state.controller.signal,
           onDelta: h.onDelta,
           onReasoning: h.onReasoning,
-          onRetry: (err, n) => h.onStatus(`${err.message} Retrying (${n}/2)…`)
+          onWait,
+          onRetry,
+          max_completion_tokens: replyCap
         });
         h.onAssistantEnd(turn.assistantMessage.content || "");
         if (turn.usage) h.onUsage(turn.usage);
+        if (turn.finishReason === "length" && replyCap < 65536) {
+          // Thinking used up the reply budget. Give the rest of this answer more.
+          const was = replyCap;
+          replyCap = Math.min(65536, replyCap * 2);
+          if (h.onNotice) h.onNotice(`Kimi's reply hit the ${was.toLocaleString()}-token cap; using ${replyCap.toLocaleString()} for the rest of this answer. Set “Max reply length” in Settings to change the default.`);
+        }
 
         messages.push(turn.assistantMessage);
         if (!turn.toolCalls.length) {
@@ -409,7 +431,10 @@ window.__netscopeAiAgent = (() => {
           reasoning_effort: settings.reasoningEffort,
           signal: state.controller.signal,
           onDelta: h.onDelta,
-          onReasoning: h.onReasoning
+          onReasoning: h.onReasoning,
+          onWait,
+          onRetry,
+          max_completion_tokens: replyCap
         });
         h.onAssistantEnd(final.assistantMessage.content || "");
         if (final.usage) h.onUsage(final.usage);

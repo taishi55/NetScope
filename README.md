@@ -65,6 +65,23 @@ Things to try:
 | `http_request` | Send a request from a cURL, a captured request (`from_id`, real headers copied locally) or a URL, with overrides |
 | `save_flow`, `run_flow`, `list_flows`, `get_flow`, `delete_flow` | Build, test, schedule and manage flows |
 
+### Staying under Kimi's rate limits
+
+Kimi limits each account (not each key) by concurrent requests, requests per minute, tokens
+per minute, and on Tier 0 tokens per day. It counts a request as its **input tokens plus
+`max_completion_tokens`**, whatever the reply actually uses — and K3's default for that is
+131,072, which would spend a Tier 1 minute in a few calls. NetScope therefore:
+
+- sets an explicit reply cap on every call (8k / 16k / 32k for Quick / Deep / Max thinking,
+  or a fixed value under Settings → **Max reply length**), raising it for the rest of an
+  answer only if a reply actually hits it;
+- keeps the resent conversation lean (about 45k tokens);
+- paces every Kimi call from every tab and every flow through one budget in the background
+  worker, sized to 90 % of your tier (Settings → **Your Kimi account tier**) — a call that
+  would cross a limit waits a few seconds, with the reason shown, instead of failing;
+- if a 429 still arrives, pauses all callers, honors `Retry-After`, and retries up to five
+  times with backoff. A daily cap or an empty balance is reported plainly, not retried.
+
 ### What waits for your approval
 
 Settings → **Ask before Kimi acts**:

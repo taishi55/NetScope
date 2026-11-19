@@ -239,6 +239,8 @@ window.__netscopeAi = (() => {
       }
     } else if (item.t === "tool") {
       renderToolItem(item);
+    } else if (item.t === "notice") {
+      el.log.appendChild(node("div", "msg-note", item.text));
     } else if (item.t === "error") {
       const m = newMessage("error");
       m.body.appendChild(node("p", "", item.msg));
@@ -574,6 +576,10 @@ window.__netscopeAi = (() => {
     onToolCall: beginTool,
     onToolResult: endTool,
     onApproval,
+    onNotice(text) {
+      renderItem({ t: "notice", text });
+      record({ t: "notice", text });
+    },
     onUsage(u) {
       if (u && typeof u.total_tokens === "number") sessionTokens += u.total_tokens;
       updateMeter();
@@ -729,6 +735,8 @@ window.__netscopeAi = (() => {
     el.effort.value = settings.reasoningEffort;
     el.effortSetting.value = settings.reasoningEffort;
     el.approval.value = settings.approval;
+    el.tier.value = settings.tier;
+    el.maxReply.value = String(settings.maxReply);
     el.redact.checked = !!settings.redact;
     el.pii.checked = !!settings.redactPii;
     el.pii.disabled = !settings.redact;
@@ -831,6 +839,8 @@ window.__netscopeAi = (() => {
           model: el.modelSetting.value,
           reasoningEffort: el.effortSetting.value,
           approval: el.approval.value,
+          tier: el.tier.value,
+          maxReply: el.maxReply.value,
           redact: el.redact.checked,
           redactPii: el.pii.checked,
           maxIterations: Math.min(30, Math.max(1, Number(el.iter.value) || 12)),
@@ -881,6 +891,7 @@ window.__netscopeAi = (() => {
       input: "aiInput", model: "aiModel", effort: "aiEffort", ctx: "aiCtx", newChat: "aiNewChat", send: "aiSend",
       stop: "aiStop", sheet: "settings", settingsBtn: "btnSettings", settingsClose: "settingsClose", key: "aiKey",
       modelSetting: "aiModelSetting", effortSetting: "aiEffortSetting", approval: "aiApproval", iter: "aiIterations",
+      tier: "aiTier", maxReply: "aiMaxReply",
       redact: "aiRedact", pii: "aiPii", consent: "aiConsent", consentText: "aiConsentText", save: "aiSave",
       test: "aiTest", forget: "aiForget"
     };
@@ -888,6 +899,17 @@ window.__netscopeAi = (() => {
 
     fillModelSelect(el.model);
     fillModelSelect(el.modelSetting);
+    const fmt = (n) => (n >= 1000000 ? n / 1000000 + "M" : n >= 1000 ? n / 1000 + "k" : String(n));
+    for (const [key, t] of Object.entries(CLIENT().TIERS)) {
+      const o = node("option", "", `${t.label} — ${t.rpm} requests and ${fmt(t.tpm)} tokens a minute${t.tpd ? `, ${fmt(t.tpd)} a day` : ""}`);
+      o.value = key;
+      el.tier.appendChild(o);
+    }
+    for (const v of CLIENT().REPLY_CHOICES) {
+      const o = node("option", "", v === "auto" ? "Auto — 8k, 16k or 32k by thinking depth" : `${Number(v).toLocaleString()} tokens`);
+      o.value = v;
+      el.maxReply.appendChild(o);
+    }
     // Short labels in the composer; the settings sheet keeps the notes.
     for (const o of el.model.options) o.textContent = o.textContent.split(" — ")[0];
 

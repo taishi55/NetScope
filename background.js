@@ -281,6 +281,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 });
 
+/* --------------------------------------------------------------- pacer */
+
+// Every Kimi call — chat in any tab, AI steps in flows — asks here first, so
+// one budget covers the whole account (see the pacer in ai-client.js).
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg || typeof msg.__netscopeAi !== "string") return;
+  if (sender.id !== chrome.runtime.id || !String(sender.url || "").startsWith(chrome.runtime.getURL(""))) return;
+  if (msg.__netscopeAi === "acquire") sendResponse(AI.tryAcquire(Math.max(0, Number(msg.tokens) || 0), String(msg.tier || "1")));
+  else if (msg.__netscopeAi === "release") sendResponse(AI.release(msg.id, !!msg.refund) || true);
+  else if (msg.__netscopeAi === "penalize") sendResponse(AI.penalize(Math.max(0, Number(msg.ms) || 0)) || true);
+});
+
 /* -------------------------------------------------------------- runner */
 
 // Headers fetch() will not let any script set. They are reported back rather

@@ -10,6 +10,14 @@
  *   - thinking is always on; depth is `reasoning_effort` = low | high | max
  *   - `reasoning_content` streams before `content` and must be sent back
  *     unchanged on assistant turns that made tool calls (preserved thinking)
+ *
+ * Rate limits (platform.kimi.ai/docs/introduction#rate-limits) are per
+ * account, across all models: concurrency, requests/min, tokens/min, and on
+ * Tier 0 tokens/day. A request is charged against them as its input tokens
+ * PLUS max_completion_tokens — not what the reply really uses — and K3's
+ * default max is 131,072. So every call here sets an explicit, effort-sized
+ * cap, and a pacer (one per browser, in the background worker) delays calls
+ * that would cross the account's limits instead of letting them bounce.
  */
 "use strict";
 
@@ -42,8 +50,32 @@ globalThis.__netscopeAiClient = (() => {
     // data (POST/PUT/PATCH/DELETE) plus saving or scheduling flows;
     // "all" = every outgoing request too; "never" = autopilot.
     approval: "writes",
+    tier: "1", // the Kimi account's usage tier; sets the pacer's budget
+    maxReply: "auto", // max_completion_tokens: "auto" sizes it from the thinking depth
     stream: true
   };
+
+  // Per-tier limits as published on Moonshot's recharge page (Nov 2026).
+  // The pacer aims for 90 % of them, leaving room for estimate error.
+  const TIERS = {
+    "0": { label: "Tier 0", concurrency: 1, rpm: 3, tpm: 500000, tpd: 1500000 },
+    "1": { label: "Tier 1", concurrency: 15, rpm: 100, tpm: 2000000, tpd: 0 },
+    "2": { label: "Tier 2", concurrency: 40, rpm: 100, tpm: 3000000, tpd: 0 },
+    "3": { label: "Tier 3", concurrency: 50, rpm: 200, tpm: 3000000, tpd: 0 },
+    "4": { label: "Tier 4", concurrency: 60, rpm: 200, tpm: 4000000, tpd: 0 },
+    "5": { label: "Tier 5", concurrency: 100, rpm: 300, tpm: 5000000, tpd: 0 }
+  };
+  const MARGIN = 0.9;
+
+  // The reply budget reserved per call. Thinking tokens come out of it too,
+  // so deeper thinking gets more room.
+  const REPLY_BY_EFFORT = { low: 8192, high: 16384, max: 32768 };
+  const REPLY_CHOICES = ["auto", "4096", "8192", "16384", "32768", "65536"];
+
+  function replyCap(s, effort) {
+    if (s.maxReply && s.maxReply !== "auto") return Number(s.maxReply) || 16384;
+    return REPLY_BY_EFFORT[effort] || 16384;
+  }
 
   const isK3 = (model) => /^kimi-k3/.test(model || "");
 
@@ -52,6 +84,8 @@ globalThis.__netscopeAiClient = (() => {
     if (!MODEL_IDS.includes(s.model)) s.model = DEFAULTS.model;
     if (!EFFORTS.includes(s.reasoningEffort)) s.reasoningEffort = DEFAULTS.reasoningEffort;
     if (!["writes", "all", "never"].includes(s.approval)) s.approval = DEFAULTS.approval;
+    if (!TIERS[s.tier]) s.tier = DEFAULTS.tier;
+    if (!REPLY_CHOICES.includes(String(s.maxReply))) s.maxReply = DEFAULTS.maxReply;
     return s;
   }
 
@@ -110,11 +144,33 @@ globalThis.__netscopeAiClient = (() => {
 
   /* ------------------------------------------------------------ errors */
 
-  function describe(status, detail) {
+  // Which limit a 429 hit, from Moonshot's error type and message.
+  function limitKind(type, detail) {
+    const t = `${type || ""} ${detail || ""}`;
+    if (/exceeded_current_quota|insufficient|balance|suspended/i.test(t)) return "quota";
+    if (/\bTPD\b|per day|daily/i.test(t)) return "tpd";
+    if (/\bTPM\b|tokens? per minute/i.test(t)) return "tpm";
+    if (/\bRPM\b|requests? per minute/i.test(t)) return "rpm";
+    if (/concurren/i.test(t)) return "concurrency";
+    if (/overload/i.test(t)) return "overloaded";
+    return "rate";
+  }
+
+  const LIMIT_TEXT = {
+    tpm: "tokens-per-minute limit",
+    rpm: "requests-per-minute limit",
+    concurrency: "limit on simultaneous requests",
+    rate: "rate limit",
+    overloaded: "servers are busy"
+  };
+
+  function describe(status, detail, kind) {
     if (status === 401) return "API key rejected — check it in AI settings.";
     if (status === 403) return "Access denied — this key may not have access to that model or region.";
     if (status === 404) return "Model not found for this key. Pick another model from the dropdown.";
-    if (status === 429) return "Rate limited by Moonshot.";
+    if (status === 429 && kind === "quota") return "Your Moonshot balance is used up. Recharge at platform.kimi.ai/console/pay, then try again.";
+    if (status === 429 && kind === "tpd") return "Your Kimi account reached its daily token limit (Tier 0). It resets within 24 hours, or recharge to move up a tier.";
+    if (status === 429) return kind === "overloaded" ? "Kimi's servers are busy." : `Kimi's ${LIMIT_TEXT[kind] || "rate limit"} was reached.`;
     if (status === 400) return detail || "Moonshot rejected the request.";
     if (status >= 500) return `Moonshot returned ${status}.`;
     return detail || `Request failed with status ${status}.`;
@@ -122,19 +178,28 @@ globalThis.__netscopeAiClient = (() => {
 
   async function httpError(res) {
     let detail = "";
+    let type = "";
     try {
       const j = await res.json();
       detail = (j && j.error && (j.error.message || j.error.type)) || "";
+      type = (j && j.error && j.error.type) || "";
     } catch (_) {}
-    const err = new Error(describe(res.status, detail));
+    const kind = res.status === 429 ? limitKind(type, detail) : "";
+    const err = new Error(describe(res.status, detail, kind));
     err.status = res.status;
     err.detail = detail;
-    err.retryable = res.status === 429 || res.status >= 500;
+    err.limit = kind;
+    // A daily cap or an empty balance will not clear in seconds.
+    err.retryable = (res.status === 429 && kind !== "tpd" && kind !== "quota") || res.status >= 500;
     const ra = res.headers.get("retry-after");
-    if (ra) {
-      const secs = Number(ra);
-      if (!isNaN(secs)) err.retryAfter = Math.min(30000, secs * 1000);
+    const reset = res.headers.get("x-ratelimit-reset");
+    let wait = NaN;
+    if (ra) wait = Number(ra) * 1000;
+    else if (reset) {
+      const n = Number(reset);
+      wait = n > 1e12 ? n - Date.now() : n > 1e9 ? n * 1000 - Date.now() : n * 1000;
     }
+    if (!isNaN(wait) && wait > 0) err.retryAfter = Math.min(65000, wait);
     return err;
   }
 
@@ -287,7 +352,142 @@ globalThis.__netscopeAiClient = (() => {
     }
   }
 
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const sleep = (ms, signal) =>
+    new Promise((resolve, reject) => {
+      const t = setTimeout(resolve, ms);
+      if (signal) {
+        if (signal.aborted) {
+          clearTimeout(t);
+          return reject(new DOMException("aborted", "AbortError"));
+        }
+        signal.addEventListener(
+          "abort",
+          () => {
+            clearTimeout(t);
+            reject(new DOMException("aborted", "AbortError"));
+          },
+          { once: true }
+        );
+      }
+    });
+
+  /* ------------------------------------------------------------- pacer */
+
+  // Runs in the background worker only, so every tab and every flow shares
+  // one view of the account's budget. tryAcquire is synchronous, which makes
+  // check-then-record atomic: two callers can never both take the last slot.
+  const pacer = { minute: [], day: [], inflight: new Map(), cooldownUntil: 0, seq: 0 };
+  const PACER_KEY = "netscope.pacer";
+
+  // The worker can be stopped between calls; keep the windows in session
+  // storage so a restart does not forget what this minute (or day) has used.
+  let saveTimer = 0;
+  function persistPacer() {
+    if (typeof window !== "undefined" || !chrome.storage || !chrome.storage.session) return;
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      chrome.storage.session
+        .set({ [PACER_KEY]: { minute: pacer.minute, day: pacer.day, cooldownUntil: pacer.cooldownUntil } })
+        .catch(() => {});
+    }, 200);
+  }
+  if (typeof window === "undefined" && chrome.storage && chrome.storage.session) {
+    chrome.storage.session
+      .get(PACER_KEY)
+      .then((got) => {
+        const saved = got && got[PACER_KEY];
+        if (!saved) return;
+        const known = new Set(pacer.minute.map((e) => e.id));
+        pacer.minute = (saved.minute || []).filter((e) => !known.has(e.id)).concat(pacer.minute);
+        pacer.day = (saved.day || []).concat(pacer.day);
+        pacer.cooldownUntil = Math.max(pacer.cooldownUntil, saved.cooldownUntil || 0);
+        pacer.seq = Math.max(pacer.seq, ...pacer.minute.map((e) => e.id || 0));
+      })
+      .catch(() => {});
+  }
+
+  function tryAcquire(tokens, tierKey) {
+    const tier = TIERS[tierKey] || TIERS[DEFAULTS.tier];
+    const now = Date.now();
+    pacer.minute = pacer.minute.filter((e) => now - e.t < 60000);
+    if (tier.tpd) pacer.day = pacer.day.filter((e) => now - e.t < 86400000);
+    for (const [id, exp] of pacer.inflight) if (exp < now) pacer.inflight.delete(id); // lost releases
+
+    const rpm = Math.max(1, Math.floor(tier.rpm * MARGIN));
+    const tpm = Math.floor(tier.tpm * MARGIN);
+    const conc = Math.max(1, Math.floor(tier.concurrency * MARGIN));
+    const used = pacer.minute.reduce((t, e) => t + e.tokens, 0);
+    const wanted = Math.min(tokens, tpm); // a request bigger than the budget still gets to try alone
+
+    const until = (list, budget, windowMs) => {
+      // When enough of the oldest reservations expire to fit this one.
+      let total = list.reduce((t, e) => t + e.tokens, 0);
+      for (const e of list) {
+        total -= e.tokens;
+        if (total + wanted <= budget) return e.t + windowMs - now + 50;
+      }
+      return windowMs;
+    };
+
+    if (now < pacer.cooldownUntil) return { wait: pacer.cooldownUntil - now, reason: "cooldown", tier: tier.label };
+    if (pacer.inflight.size >= conc) return { wait: 700, reason: "concurrency", tier: tier.label };
+    if (pacer.minute.length >= rpm) return { wait: pacer.minute[0].t + 60000 - now + 50, reason: "rpm", tier: tier.label };
+    if (used + wanted > tpm) return { wait: until(pacer.minute, tpm, 60000), reason: "tpm", tier: tier.label };
+    if (tier.tpd) {
+      const day = pacer.day.reduce((t, e) => t + e.tokens, 0);
+      if (day + wanted > tier.tpd * MARGIN) return { wait: until(pacer.day, tier.tpd * MARGIN, 86400000), reason: "tpd", tier: tier.label };
+    }
+
+    const id = ++pacer.seq;
+    pacer.minute.push({ id, t: now, tokens: wanted });
+    if (tier.tpd) pacer.day.push({ id, t: now, tokens: wanted });
+    pacer.inflight.set(id, now + REQUEST_TIMEOUT + 10000);
+    persistPacer();
+    return { id };
+  }
+
+  // refund: the request was refused (429), and Kimi does not count refused
+  // requests — give its tokens back so the retry is not budgeted twice.
+  function release(id, refund) {
+    pacer.inflight.delete(id);
+    if (refund) {
+      pacer.minute = pacer.minute.filter((e) => e.id !== id);
+      pacer.day = pacer.day.filter((e) => e.id !== id);
+      persistPacer();
+    }
+  }
+
+  // After a 429 every caller holds off, not just the one that was refused.
+  function penalize(ms) {
+    pacer.cooldownUntil = Math.max(pacer.cooldownUntil, Date.now() + Math.min(ms, 65000));
+    persistPacer();
+  }
+
+  const inWorker = typeof window === "undefined";
+
+  function pacerCall(msg) {
+    if (inWorker) {
+      if (msg.op === "acquire") return Promise.resolve(tryAcquire(msg.tokens, msg.tier));
+      if (msg.op === "release") return Promise.resolve(release(msg.id, msg.refund));
+      return Promise.resolve(penalize(msg.ms));
+    }
+    return chrome.runtime.sendMessage({ __netscopeAi: msg.op, ...msg }).catch(() => ({ id: 0 })); // worker unreachable: don't block
+  }
+
+  // Waits (reporting why) until the account has room for this request.
+  async function acquire(tokens, s, signal, onWait) {
+    const t0 = Date.now();
+    for (;;) {
+      const r = (await pacerCall({ op: "acquire", tokens, tier: s.tier })) || { id: 0 };
+      if (!r.wait) return { id: r.id, waited: Date.now() - t0 };
+      if (onWait) onWait({ ms: r.wait, reason: r.reason, tier: r.tier });
+      await sleep(Math.min(r.wait, 3000), signal);
+    }
+  }
+
+  // ~3 characters per token over the JSON actually sent: errs high for
+  // English/JSON, which is the safe direction for a budget.
+  const estimateTokens = (body) => Math.ceil(JSON.stringify(body).length / 3) + (body.max_completion_tokens || 131072);
 
   async function chat(opts) {
     const s = await loadSettings();
@@ -306,23 +506,38 @@ globalThis.__netscopeAiClient = (() => {
     }
     // reasoning_effort exists only on the K3 series; K2.x would reject it.
     if (isK3(model) && EFFORTS.includes(opts.reasoning_effort)) body.reasoning_effort = opts.reasoning_effort;
-    if (typeof opts.max_completion_tokens === "number") body.max_completion_tokens = opts.max_completion_tokens;
+    // Always explicit: the rate limiter reserves input + this, and the
+    // server-side default (131,072 on K3) would eat a Tier 1 minute in a few calls.
+    body.max_completion_tokens =
+      typeof opts.max_completion_tokens === "number" ? opts.max_completion_tokens : replyCap(s, opts.reasoning_effort || s.reasoningEffort);
 
     const callOpts = { signal: opts.signal, onDelta: opts.onDelta, onReasoning: opts.onReasoning, apiKey: s.apiKey };
+    const tokens = estimateTokens(body);
 
     for (let tries = 0; ; tries++) {
       let streamed = false;
+      let refused = false;
+      const slot = await acquire(tokens, s, opts.signal, opts.onWait);
       try {
         return await attempt(body, callOpts, () => {
           streamed = true;
         });
       } catch (err) {
         if (err && err.name === "AbortError") throw err;
+        refused = !!(err && err.status === 429);
+        if (err && err.status === 429 && err.retryable) {
+          // Tell every caller to back off, then wait our turn again.
+          const backoff = err.retryAfter || Math.min(60000, 4000 * 2 ** tries);
+          pacerCall({ op: "penalize", ms: backoff });
+        }
         // Retrying after tokens have reached the transcript would duplicate them.
-        if (streamed || !err.retryable || tries >= 2) throw err;
-        const backoff = err.retryAfter || (tries === 0 ? 1000 : 3000);
-        if (opts.onRetry) opts.onRetry(err, tries + 1);
-        await sleep(backoff + Math.floor(Math.random() * 300));
+        const maxTries = err && err.status === 429 ? 5 : 2;
+        if (streamed || !err.retryable || tries >= maxTries) throw err;
+        const backoff = err.retryAfter || (err.status === 429 ? Math.min(60000, 4000 * 2 ** tries) : tries === 0 ? 1000 : 3000);
+        if (opts.onRetry) opts.onRetry(err, tries + 1, maxTries, backoff);
+        await sleep(backoff + Math.floor(Math.random() * 400), opts.signal);
+      } finally {
+        if (slot.id) pacerCall({ op: "release", id: slot.id, refund: refused });
       }
     }
   }
@@ -353,6 +568,12 @@ globalThis.__netscopeAiClient = (() => {
     DEFAULTS,
     MODELS,
     EFFORTS,
+    TIERS,
+    REPLY_CHOICES,
+    replyCap,
+    tryAcquire,
+    release,
+    penalize,
     isK3,
     ENDPOINT,
     loadSettings,
