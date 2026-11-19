@@ -2,67 +2,65 @@
 CHROME WEB STORE — DETAILED DESCRIPTION  (paste into "Description")
 ========================================================================
 
-Chrome's Network panel filters by URL. NetScope searches what actually came back — and can now explain it.
+Click the icon on any page and ask Kimi about the API it's calling. Send requests from cURL like Postman. Turn a sequence of calls into a flow that runs every hour.
 
-NetScope adds a native panel to Chrome DevTools that indexes everything the page transfers: response bodies, request bodies, headers on both sides, and every live WebSocket frame, all searchable in one place.
+NetScope opens a popup right on the page, starting on a chat with Kimi. No DevTools needed.
 
-SEARCH INSIDE RESPONSES
-Type a value, an ID, or an error string and instantly see which request returned it. Plain text or regex, case toggle, and per-field scopes (url, request headers, request body, response headers, response body, WebSocket frames) so you can search exactly where you mean. "Found in" chips on every row show where each hit lives, matches are highlighted in the detail pane, and Enter jumps to the next matching request.
+CHAT WITH YOUR PAGE'S API
+Ask what an endpoint does, why a request failed, or how the whole API fits together. Kimi works through purpose-built tools instead of a giant prompt: it groups endpoints by normalized path, searches bodies, diffs a failed request against a successful one, and cites the requests it used so you can click straight to them. Choose Kimi K3.1 Pro, K3.1 Pro Highspeed or K3, and how deeply it thinks.
 
-WEBSOCKETS AS FIRST-CLASS CITIZENS
-Every sent and received frame is captured live, tagged by direction, timestamped, and fully searchable. Inspect individual frames with pretty-printed JSON and match highlighting.
+CALL APIS LIKE POSTMAN
+Paste a cURL into the chat and Kimi runs it and explains the response, or ask it to replay a request the page made with different parameters. Or do it yourself: Edit & send turns any captured request into an editable cURL with a Send button. Requests run from the extension, so CORS doesn't get in the way. Anything that can change data waits for your click first.
 
-AI ASSISTANT (OPTIONAL, BRING YOUR OWN KEY)
-Ask what an endpoint does, why a request failed, or how the whole API surface fits together. The assistant uses Kimi K3 and works agentically: instead of dumping your traffic into a prompt, it queries the capture through purpose-built tools — grouping endpoints by normalized path, searching bodies, diffing a failed request against a successful one — and cites the entry ids it used so you can click straight to the row. One-click actions: Summarize API structure, Explain endpoint, Debug this error.
+AUTOMATE MULTI-STEP FLOWS
+Describe it — "every hour, get the newest order and post its id to my webhook" — and Kimi builds a flow from requests the page already made, runs it once to prove it works, then schedules it. Steps pass values to each other ({{steps.list.body.items[0].id}}), can have conditions, and can include AI steps that summarize or decide. Schedules run in the background while Chrome is open.
 
-This feature is disabled until you add your own Moonshot API key and consent. See PRIVACY below.
+KEEP LOGS ON RELOAD
+One switch keeps the captured traffic — and your conversation — across page reloads and navigations.
 
-COPY AS CURL
-Reproduce any captured HTTP request outside the browser in one click — method, real browser headers (cookies included) and body, properly shell-escaped. For WebSockets, get ready-made websocat and wscat commands plus a cURL handshake probe.
+SEARCH EVERYTHING THE PAGE SENT AND RECEIVED
+Full-text or regex search across URLs, headers, request and response bodies and live WebSocket frames, with per-field scopes and highlighted matches. Repeated requests group into one row with a ×N counter. Export WebSocket traffic as an AsyncAPI 3.0 skeleton.
 
-EXPORT ASYNCAPI 3.0
-Turn captured WebSocket traffic into an AsyncAPI 3.0 skeleton: servers, one channel per socket, send/receive operations, and real captured payloads embedded as message examples. Document an undocumented realtime API in seconds.
-
-A NOISE-FREE LIST
-Repeated requests with the same input — polling, heartbeats, retries — collapse into a single row with a ×N counter by default. If the grouped responses came back with different statuses, the badge turns amber and the detail pane shows a per-status breakdown, so an intermittent 500 never hides. Toggle "Group duplicates" off to see every occurrence.
-
-HOW CAPTURE WORKS
-HTTP is captured with chrome.devtools.network — the same API the Network panel itself uses — so capture runs while DevTools is open, with no "extension is debugging this browser" bar and no use of chrome.debugger. WebSocket frames are mirrored by a small wrapper around window.WebSocket installed at page load; native behavior is unchanged. Everything is held in memory for the current DevTools session.
+EXPANDABLE
+A compact panel, a large split view, or a pill with a live traffic trace.
 
 PRIVACY
-Capture is entirely local: no analytics, no telemetry, no error reporting, and the developer never receives anything. The one exception is the optional AI assistant, which is off by default: when you enable it with your own API key and use it, excerpts of the captured traffic and your question are sent to api.moonshot.ai to be answered. That can include session tokens and personal data the page transfers, so only use it on traffic you may share. Optional settings mask secret headers, cookies and token-shaped strings before sending. Your API key is stored locally and never synced.
+No analytics, no telemetry, and the developer never receives anything. Data leaves your machine only when you ask: Kimi (off until you add your own Moonshot API key and consent) receives your questions and the traffic excerpts it needs; requests and flows go to the URLs they name. Optional masking hides secret headers, cookies and token-shaped strings from Kimi. Your API key stays in this browser profile and is never synced.
 
 NOTES
-- HTTP is captured only while DevTools is open (a Chrome platform limit, same as the HAR).
-- Reload the page once after installing so the WebSocket hook is in place before sockets open.
-- Bodies are truncated at 1 MB, WebSocket frames at 256 KB; the last 4,000 entries are kept.
-- Generated cURL commands include your cookies and auth headers verbatim — treat them as secrets.
+- Captures the page's own fetch, XHR and WebSocket traffic; reload pages that were open before installing.
+- Scripts cannot set Cookie, Origin, Referer or User-Agent headers; the browser's own cookies are sent instead.
+- Bodies are captured up to 256 KB; each tab keeps the last 3,000 entries.
+- cURL commands include captured auth headers verbatim — treat them as secrets.
 
-Open source and lightweight: no frameworks, no build step, no analytics, no background activity.
+Open source, no frameworks, no build step.
 
 ========================================================================
 PRIVACY / REVIEW FORM — SUGGESTED JUSTIFICATIONS
 ========================================================================
 
 Single purpose:
-Developer tool that captures the inspected tab's network traffic (HTTP bodies, headers, WebSocket frames) into a DevTools panel, lets the user search it, copy requests as cURL, export WebSocket traffic as AsyncAPI, and optionally ask an AI assistant about it using the user's own API key.
-
-Permission "clipboardWrite":
-Used only when the user clicks a Copy button (copy as cURL, copy a frame payload, copy the AsyncAPI document, copy an assistant reply).
+Developer tool for working with a web page's API: it captures the page's fetch/XHR/WebSocket traffic into an in-page popup, lets the user search it, resend requests (from cURL or captured requests), automate multi-step request flows on a schedule, and optionally ask an AI assistant about all of it with the user's own API key.
 
 Permission "storage":
-Stores the AI assistant's API key and settings locally via chrome.storage.local. Deliberately not chrome.storage.sync, so the key never leaves the machine. No other data is persisted.
+Settings, the user's Moonshot API key, saved flows and their run history (chrome.storage.local, never sync), and the per-tab chat (chrome.storage.session).
 
-Host permission "https://api.moonshot.ai/*":
-The AI assistant sends the user's question and traffic excerpts to Moonshot AI's chat completions endpoint to be answered, authenticated with the user's own API key. This is the only host the extension can contact. It is unused unless the user enables the assistant.
+Permission "alarms":
+Runs the user's saved flows on the schedule the user chose.
 
-Content scripts on "<all_urls>":
-Chrome exposes no API for observing WebSocket frames, so the extension installs a small wrapper around window.WebSocket at document_start and mirrors frames to the DevTools panel. It must run on whichever page the developer chooses to debug, which cannot be known in advance. It reads no page content and alters no page behavior.
+Permission "scripting":
+Injects the capture hook and popup into tabs that were already open before the extension was installed, when the user clicks the toolbar icon.
+
+Permission "clipboardWrite":
+Used only when the user clicks a Copy button (cURL, payload, AsyncAPI document, assistant reply).
+
+Host permission and content scripts on "<all_urls>":
+Chrome has no API for reading response bodies or WebSocket frames outside DevTools, so a small hook wraps fetch, XMLHttpRequest and WebSocket at document_start on whichever page the developer wants to work with, which cannot be known in advance. The host permission lets the user's own requests and scheduled flows reach whichever API the user points them at, and lets the AI assistant reach api.moonshot.ai. The hook reads no page content beyond that traffic and does not alter page behavior.
 
 Remote code:
-None. All code is packaged with the extension. Responses from the Moonshot API are data, rendered as text via textContent — never evaluated or executed.
+None. All code is packaged with the extension. Responses from Moonshot and from APIs the user calls are data, rendered via textContent — never evaluated or executed.
 
 Data usage — collected or transferred:
-Website content is transferred, but only when the user enables the optional AI assistant and asks it a question. In that case excerpts of the captured traffic (URLs, headers, body fragments, WebSocket payloads) and the user's question are sent to api.moonshot.ai using the user's own API key, solely to generate the answer displayed in the panel. The user consents explicitly before this is possible, each request is user-initiated, and the transcript shows exactly what was sent. Optional masking of secret headers and token-shaped strings is available.
+Website content (the page's API traffic) is processed locally and stored in the extension's IndexedDB per tab, cleared on each page load unless the user enables "Keep logs on reload", on tab close, and on browser start. It is transferred only (1) to api.moonshot.ai when the user has enabled the optional assistant with their own key and asks it something, solely to answer, and (2) as HTTP requests the user sends or schedules, to the URLs those requests name. The user consents explicitly before the assistant can run, requests that can change data require a click by default, and the chat shows exactly what was sent.
 
-Nothing is sold, nothing is shared with any other party, nothing is used for advertising or creditworthiness, and the developer receives no data of any kind. With the assistant disabled — the default state — no data leaves the user's machine.
+Nothing is sold, nothing is shared with any other party, nothing is used for advertising or creditworthiness, and the developer receives no data of any kind.

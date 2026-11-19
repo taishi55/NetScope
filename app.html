@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>NetScope</title>
+    <link rel="stylesheet" href="app.css" />
+  </head>
+  <body class="mode-panel">
+    <svg width="0" height="0" style="position: absolute" aria-hidden="true">
+      <symbol id="i-scope" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="9.25" fill="none" stroke="currentColor" stroke-width="1.6" />
+        <path d="M4.5 13.2h3.1l1.6-4.6 2.6 8.2 2.2-6.1 1.3 2.5h4.2" fill="none" stroke="var(--signal)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+      </symbol>
+      <symbol id="i-gear" viewBox="0 0 24 24">
+        <path d="M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4Z" fill="none" stroke="currentColor" stroke-width="1.6" />
+        <path d="M19.4 13.5a7.6 7.6 0 0 0 0-3l2-1.5-2-3.4-2.3 1a7.7 7.7 0 0 0-2.6-1.5L14.2 2.6h-4l-.4 2.5a7.7 7.7 0 0 0-2.6 1.5l-2.3-1-2 3.4 2 1.5a7.6 7.6 0 0 0 0 3l-2 1.5 2 3.4 2.3-1a7.7 7.7 0 0 0 2.6 1.5l.4 2.5h4l.4-2.5a7.7 7.7 0 0 0 2.6-1.5l2.3 1 2-3.4-2-1.5Z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" />
+      </symbol>
+      <symbol id="i-expand" viewBox="0 0 24 24">
+        <path d="M14 4h6v6M10 20H4v-6M20 4l-7 7M4 20l7-7" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" />
+      </symbol>
+      <symbol id="i-shrink" viewBox="0 0 24 24">
+        <path d="M19 10h-5V5M5 14h5v5M14 10l6-6M10 14l-6 6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" />
+      </symbol>
+      <symbol id="i-min" viewBox="0 0 24 24">
+        <path d="M5 12h14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+      </symbol>
+      <symbol id="i-close" viewBox="0 0 24 24">
+        <path d="M6 6l12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+      </symbol>
+      <symbol id="i-back" viewBox="0 0 24 24">
+        <path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+      </symbol>
+    </svg>
+
+    <!-- Collapsed: a pill with the live trace -->
+    <div id="pill" hidden>
+      <button id="pillOpen" type="button" title="Open NetScope">
+        <svg class="mark"><use href="#i-scope" /></svg>
+        <span class="pill-name">NetScope</span>
+        <canvas id="pillTrace" width="64" height="22" aria-hidden="true"></canvas>
+        <span id="pillCount" class="pill-count"></span>
+      </button>
+      <button id="pillClose" class="icon" type="button" title="Hide NetScope" aria-label="Hide NetScope">
+        <svg><use href="#i-close" /></svg>
+      </button>
+    </div>
+
+    <div id="shell">
+      <header id="top">
+        <div class="brand">
+          <svg class="mark"><use href="#i-scope" /></svg>
+          <span>NetScope</span>
+        </div>
+        <canvas id="trace" height="28" aria-hidden="true" title="Requests per second, last 90 s"></canvas>
+        <div class="win">
+          <button id="btnSettings" class="icon" type="button" title="Settings" aria-label="Settings">
+            <svg><use href="#i-gear" /></svg>
+          </button>
+          <button id="btnLarge" class="icon" type="button" title="Expand" aria-label="Expand">
+            <svg><use href="#i-expand" /></svg>
+          </button>
+          <button id="btnCollapse" class="icon" type="button" title="Minimize" aria-label="Minimize">
+            <svg><use href="#i-min" /></svg>
+          </button>
+          <button id="btnClose" class="icon" type="button" title="Hide (Alt+Shift+N)" aria-label="Hide NetScope">
+            <svg><use href="#i-close" /></svg>
+          </button>
+        </div>
+      </header>
+
+      <nav id="views" role="tablist" aria-label="NetScope">
+        <button role="tab" id="tab-chat" data-view="chat" aria-selected="true" aria-controls="view-chat">Chat</button>
+        <button role="tab" id="tab-traffic" data-view="traffic" aria-selected="false" aria-controls="view-traffic">
+          Traffic <span class="count" id="trafficCount"></span>
+        </button>
+        <button role="tab" id="tab-flows" data-view="flows" aria-selected="false" aria-controls="view-flows">
+          Flows <span class="count" id="flowsCount"></span>
+        </button>
+        <span class="spacer"></span>
+        <label class="switch" title="Keep captured requests when this page reloads or navigates">
+          <input type="checkbox" id="preserve" role="switch" />
+          <span class="track" aria-hidden="true"></span>
+          <span class="switch-label">Keep logs on reload</span>
+        </label>
+      </nav>
+
+      <main>
+        <!-- ============================================================ Chat -->
+        <section id="view-chat" class="view on" role="tabpanel" aria-labelledby="tab-chat">
+          <div id="aiLog" role="log" aria-live="polite">
+            <div id="aiEmpty">
+              <h2>Ask about this page's API</h2>
+              <p>Kimi reads the requests this page makes, calls endpoints for you, and turns a sequence of calls into a flow that can run on a schedule.</p>
+              <div id="aiConnect" class="connect" hidden>
+                <p>Add your Kimi API key to start. Traffic, Edit &amp; send and Flows work without it.</p>
+                <button id="aiConnectBtn" class="primary" type="button">Connect Kimi</button>
+              </div>
+              <div id="aiSuggest" class="suggest">
+                <button type="button" data-prompt="summarize">Map the API this page uses</button>
+                <button type="button" data-prompt="Find the most recent failed request and tell me why it failed.">Why did the last request fail?</button>
+                <button type="button" data-prompt="Pick the most useful JSON endpoint this page called, call it again yourself, and show me what changed.">Call an endpoint again</button>
+                <button type="button" data-prompt="Build a flow from this page's traffic: call the main list endpoint, take the first item's id from the response, then fetch that item's detail. Run it once, then schedule it every hour.">Automate a two-step flow</button>
+              </div>
+            </div>
+          </div>
+
+          <form id="aiComposer" autocomplete="off">
+            <div id="aiContext" hidden>
+              <span class="ctx-label">About</span>
+              <button type="button" id="aiContextOpen" class="ctx-chip"></button>
+              <button type="button" id="aiContextClear" class="icon small" title="Don't include this request" aria-label="Don't include this request">
+                <svg><use href="#i-close" /></svg>
+              </button>
+            </div>
+            <textarea id="aiInput" rows="2" spellcheck="false" placeholder="Ask Kimi, paste a cURL to run, or describe a flow to automate" aria-label="Message Kimi"></textarea>
+            <div class="composer-row">
+              <select id="aiModel" title="Kimi model" aria-label="Kimi model"></select>
+              <select id="aiEffort" title="How long Kimi thinks before answering" aria-label="Thinking depth">
+                <option value="low">Quick</option>
+                <option value="high">Deep</option>
+                <option value="max">Max</option>
+              </select>
+              <span id="aiCtx" class="meter"></span>
+              <span class="spacer"></span>
+              <button type="button" id="aiNewChat" class="ghost" title="Start a new chat">New chat</button>
+              <button id="aiSend" class="primary" type="submit">Send</button>
+              <button id="aiStop" type="button" class="danger" hidden>Stop</button>
+            </div>
+          </form>
+        </section>
+
+        <!-- ========================================================= Traffic -->
+        <section id="view-traffic" class="view" role="tabpanel" aria-labelledby="tab-traffic">
+          <div id="toolbar">
+            <div class="row">
+              <input id="search" type="search" placeholder="Search requests and responses" autocomplete="off" spellcheck="false" aria-label="Search captured traffic" />
+              <button class="tgl" id="optCase" type="button" title="Match case" aria-pressed="false">Aa</button>
+              <button class="tgl" id="optRegex" type="button" title="Regular expression" aria-pressed="false">.*</button>
+              <select id="typeFilter" title="Filter by type" aria-label="Filter by type">
+                <option value="all">All</option>
+                <option value="api">Fetch / XHR</option>
+                <option value="netscope">Sent by NetScope</option>
+                <option value="ws">WebSocket</option>
+                <option value="errors">Errors</option>
+              </select>
+            </div>
+            <div class="row second">
+              <div id="scopes" role="group" aria-label="Search in">
+                <button class="tgl on" type="button" data-scope="url" aria-pressed="true">url</button>
+                <button class="tgl on" type="button" data-scope="reqH" aria-pressed="true">req headers</button>
+                <button class="tgl on" type="button" data-scope="reqB" aria-pressed="true">req body</button>
+                <button class="tgl on" type="button" data-scope="resH" aria-pressed="true">res headers</button>
+                <button class="tgl on" type="button" data-scope="resB" aria-pressed="true">res body</button>
+                <button class="tgl on" type="button" data-scope="ws" aria-pressed="true">frames</button>
+              </div>
+            </div>
+            <div class="row third">
+              <span id="stats"></span>
+              <span class="spacer"></span>
+              <label class="chk" title="Collapse identical requests into one row with a count">
+                <input type="checkbox" id="collapseDupes" checked /> Group repeats
+              </label>
+              <button id="exportAsync" type="button" class="ghost" hidden title="Download the captured WebSocket traffic as an AsyncAPI 3.0 file">AsyncAPI</button>
+              <button id="newRequest" type="button" class="ghost" title="Paste a cURL and send it">New request</button>
+              <button id="clearBtn" type="button" class="ghost" title="Clear captured requests">Clear</button>
+            </div>
+          </div>
+
+          <div id="split">
+            <section id="listWrap">
+              <table id="list">
+                <thead>
+                  <tr>
+                    <th class="c-name">Name</th>
+                    <th class="c-m">Method</th>
+                    <th class="c-s">Status</th>
+                    <th class="c-t">Type</th>
+                    <th class="c-hit">Found in</th>
+                    <th class="c-sz">Size</th>
+                    <th class="c-tm">Time</th>
+                  </tr>
+                </thead>
+                <tbody id="rows"></tbody>
+              </table>
+              <div id="empty">
+                <p class="lead">Listening for requests</p>
+                <p>Requests this page makes with fetch, XHR and WebSocket appear here as they happen. Reload the page to capture its startup calls.</p>
+              </div>
+            </section>
+
+            <section id="detail" class="hidden" aria-label="Request details">
+              <div id="detailBar">
+                <button id="closeDetail" class="icon" type="button" title="Back to the list (Esc)" aria-label="Back to the list">
+                  <svg><use href="#i-back" /></svg>
+                </button>
+                <nav id="tabs"></nav>
+                <span class="spacer"></span>
+                <span id="detailActions"></span>
+              </div>
+              <div id="detailBody"></div>
+            </section>
+          </div>
+        </section>
+
+        <!-- =========================================================== Flows -->
+        <section id="view-flows" class="view" role="tabpanel" aria-labelledby="tab-flows">
+          <div id="flowsHead">
+            <p>Chain API calls: each step can use values from earlier responses. Run a flow now or on a schedule — schedules keep running while the browser is open, even with this page closed.</p>
+            <div class="actions">
+              <button id="flowAsk" class="primary" type="button">Build with Kimi</button>
+              <button id="flowNew" type="button">New flow</button>
+            </div>
+          </div>
+          <div id="flowAlert" class="alert" hidden></div>
+          <div id="flowList"></div>
+          <div id="flowEditor" hidden></div>
+        </section>
+      </main>
+
+      <!-- ======================================================== Settings -->
+      <div id="settings" class="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+        <div class="sheet-head">
+          <h3 id="settingsTitle">Settings</h3>
+          <button id="settingsClose" class="icon" type="button" title="Close settings" aria-label="Close settings">
+            <svg><use href="#i-close" /></svg>
+          </button>
+        </div>
+        <div class="sheet-body">
+          <h4>Kimi API key</h4>
+          <input id="aiKey" type="password" placeholder="sk-…" autocomplete="off" spellcheck="false" aria-label="Kimi API key" />
+          <p class="hint">
+            Get one at platform.moonshot.ai — a key with a spend cap is wise. It is stored in this
+            browser profile only (chrome.storage.local, never synced) and sent only to api.moonshot.ai.
+          </p>
+
+          <label class="field">Model
+            <select id="aiModelSetting"></select>
+          </label>
+          <label class="field">Thinking depth
+            <select id="aiEffortSetting">
+              <option value="low">Quick (low)</option>
+              <option value="high">Deep (high)</option>
+              <option value="max">Max</option>
+            </select>
+          </label>
+          <label class="field">Ask before Kimi acts
+            <select id="aiApproval">
+              <option value="writes">For changes: POST, PUT, PATCH, DELETE and schedules</option>
+              <option value="all">For every request it sends</option>
+              <option value="never">Never (autopilot)</option>
+            </select>
+          </label>
+          <label class="field">Max tool calls per answer
+            <input id="aiIterations" type="number" min="1" max="30" step="1" />
+          </label>
+
+          <label class="chk"><input type="checkbox" id="aiRedact" /> Mask secrets before sending to Kimi</label>
+          <label class="chk sub"><input type="checkbox" id="aiPii" /> Also mask emails, card and SSN patterns</label>
+
+          <label class="chk consent"><input type="checkbox" id="aiConsent" /> <span id="aiConsentText"></span></label>
+
+          <div class="actions">
+            <button id="aiSave" class="primary" type="button">Save and enable</button>
+            <button id="aiTest" type="button">Test key</button>
+            <button id="aiForget" type="button" class="ghost">Forget key</button>
+          </div>
+
+          <h4>Shortcut</h4>
+          <p class="hint">Alt+Shift+N opens or hides NetScope on the current page. Change it at chrome://extensions/shortcuts.</p>
+        </div>
+      </div>
+    </div>
+
+    <div id="toast" role="status" hidden></div>
+
+    <script src="curl.js"></script>
+    <script src="ai-tools.js"></script>
+    <script src="ai-client.js"></script>
+    <script src="ai-agent.js"></script>
+    <script src="app.js"></script>
+    <script src="ai-panel.js"></script>
+    <script src="flows-ui.js"></script>
+    <script src="boot.js"></script>
+  </body>
+</html>

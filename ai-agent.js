@@ -2,15 +2,17 @@
  * The agent loop: prompt, quick-action seeds, and the tool-calling iteration.
  *
  * The model never sees the capture directly. It calls tools from ai-tools.js,
- * which is what makes this usable at all — the store can hold 4000 entries with
- * 1 MB bodies, so the only workable strategy is broad-then-narrow drilling.
+ * which is what makes this usable at all — the store can hold thousands of
+ * entries with large bodies, so the only workable strategy is broad-then-
+ * narrow drilling. Tools with side effects (sending requests, saving or
+ * running flows) pass through an approval gate first, per the user's policy.
  */
 "use strict";
 
 window.__netscopeAiAgent = (() => {
   const ELIDED = '{"note":"tool result elided to save context"}';
   const MAX_HISTORY_CHARS = 400000;
-  const RUN_TIME_LIMIT = 180000;
+  const RUN_TIME_LIMIT = 300000;
 
   const T = () => window.__netscopeAiTools;
   const C = () => window.__netscopeAiClient;
@@ -36,46 +38,68 @@ window.__netscopeAiAgent = (() => {
     messages = [];
   }
 
+  // The conversation outlives page reloads: ai-panel.js stores it per tab.
+  function getMessages() {
+    return messages;
+  }
+
+  function setMessages(list) {
+    if (currentRun) return;
+    messages = Array.isArray(list) ? list : [];
+  }
+
+  const msgChars = (m) => ((m.content && m.content.length) || 0) + ((m.reasoning_content && m.reasoning_content.length) || 0);
+
   function contextChars() {
-    return messages.reduce((t, m) => t + ((m.content && m.content.length) || 0), 0);
+    return messages.reduce((t, m) => t + msgChars(m), 0);
   }
 
   /* ------------------------------------------------------------ prompt */
 
   function systemPrompt() {
     return [
-      "You are NetScope AI, embedded in a Chrome DevTools panel that has captured the network",
-      "traffic of the page the developer is inspecting.",
+      "You are NetScope AI, an API copilot inside a popup on the web page the developer is looking at.",
+      "NetScope records the page's API traffic (fetch, XHR and WebSocket frames). With your tools you can:",
+      "- read that capture: get_capture_summary, list_endpoints, list_requests, search_traffic, get_request,",
+      "  describe_json, get_websocket_frames, compare_requests, get_curl;",
+      "- call APIs like Postman: http_request (from a cURL, a captured request via from_id, or a URL);",
+      "- automate: save_flow, run_flow, list_flows, get_flow, delete_flow — chains of requests where later steps",
+      "  use values from earlier responses, run on demand or every N minutes in the background.",
       "",
-      "You cannot see the traffic directly — use the tools. Ground every factual claim about a",
-      "request, endpoint, header, status or field in a tool result. Never guess a URL, status",
-      "code, header name or JSON field name.",
+      "Ground every factual claim about a request, endpoint, header, status or field in a tool result. Never guess",
+      "a URL, status code, header name or JSON field name.",
       "",
-      "Method:",
-      "- Go broad then narrow: get_capture_summary -> list_endpoints -> list_requests or",
-      "  search_traffic -> get_request, describe_json, compare_requests.",
-      "- Prefer describe_json or a search snippet over a full body. Bodies are large and cost context.",
-      "- Entry ids are stable integers. Cite them as \"#412\" so the developer can click through to the row.",
-      "- If a result says \"truncated\": true, narrow the filter — do not repeat the same call.",
+      "Reading the capture:",
+      "- Broad then narrow: get_capture_summary -> list_endpoints -> list_requests or search_traffic ->",
+      "  get_request, describe_json, compare_requests. Prefer describe_json or a snippet over a full body.",
+      "- Entry ids are stable integers. Cite them as \"#412\" so the developer can click through.",
+      "- If a result says \"truncated\": true, narrow the filter rather than repeating the call.",
+      "- Only traffic made after the page loaded with NetScope active exists. Requests the browser makes on its own",
+      "  (documents, images, scripts) are not captured. If something is missing, say what to do (for example: turn",
+      "  on Keep logs on reload, then reload the page).",
+      "- Values shown as <redacted ...> were masked locally. You cannot send them; use from_id instead, which",
+      "  copies the real values inside the extension. Never ask the developer to paste a secret.",
       "",
-      "What the data is and is not:",
-      "- Only traffic captured while DevTools was open exists. Earlier requests are invisible; say",
-      "  so rather than speculating.",
-      "- Response bodies are capped at 1 MB at capture time and WebSocket frames at 256 KB.",
-      "- flags.res_body_binary means the body was not captured as text, not that it was empty.",
-      "- flags.res_body_pending means the body was still downloading when captured.",
-      "- Header or body values shown as <redacted ...> were masked locally before reaching you.",
-      "  Never ask the developer to paste a secret.",
-      "- WebSocket frames exist only for sockets opened after the page loaded with the extension active.",
+      "Calling APIs:",
+      "- To repeat or tweak something the page did, use http_request with from_id and override only what changes.",
+      "- If the developer pastes a cURL, pass it as `curl` unchanged unless they ask for edits.",
+      "- Requests run from the extension with the browser's cookies for that site; Cookie/Origin/Referer/User-Agent",
+      "  headers cannot be set by scripts and are reported as dropped.",
+      "- Some actions wait for the developer to approve them. If a result says the user declined, do not retry",
+      "  the same action; explain or offer an alternative.",
+      "- Do not send requests that delete or modify data unless the developer clearly asked for that outcome.",
+      "",
+      "Building flows:",
+      "- Before save_flow, look at the real responses (get_request / describe_json) so extract paths and",
+      "  templates point at fields that exist. Use step ids that describe the step (\"list_orders\", \"get_order\").",
+      "- Prefer from_id for steps based on captured requests so authentication carries over.",
+      "- After saving, run_flow once and report each step's result. Only then say it is scheduled.",
+      "- \"Every hour\" is every_minutes 60. Mention that schedules run while the browser is open.",
       "",
       "Answering:",
-      "- Concise and technical. The reader is a developer with DevTools already open.",
-      "- Short sections and bullet lists. No emojis. No tables. Plain text with simple \"- \" bullets",
-      "  and ``` fences; the panel renders nothing richer.",
-      "- When diagnosing: what you observed (with ids), then the most likely cause, then the next",
-      "  concrete check.",
-      "- If the capture is insufficient, name what the developer should do to capture it (for",
-      "  example: enable Preserve log and reload)."
+      "- Concise and technical; the reader is a developer.",
+      "- Short sections and \"- \" bullets. No tables, no emojis. ``` fences for code, JSON and cURL.",
+      "- When diagnosing: what you observed (with ids), the most likely cause, then the next concrete check."
     ].join("\n");
   }
 
@@ -197,8 +221,11 @@ window.__netscopeAiAgent = (() => {
           e.kind === "http"
             ? `${e.method} ${t.clipUrl(e.url, 200)} → ${e.status || "no response"}`
             : `${e.kind} ${t.clipUrl(e.url, 200)}`;
-        text += `\n\n(The developer currently has #${e.id} selected: ${label}.)`;
+        text += `\n\n(The developer is asking about #${e.id}: ${label}.)`;
       }
+    }
+    if (/^\s*curl\s/i.test(spec.text)) {
+      text += "\n\n(The developer pasted a cURL command: run it with http_request and explain the response.)";
     }
     return { text, display: spec.text };
   }
@@ -233,7 +260,7 @@ window.__netscopeAiAgent = (() => {
     while (chars > MAX_HISTORY_CHARS && messages.length > 4 && guard++ < 500) {
       do {
         const dropped = messages.splice(1, 1)[0];
-        chars -= (dropped.content && dropped.content.length) || 0;
+        chars -= msgChars(dropped);
       } while (messages.length > 2 && messages[1].role !== "user" && guard++ < 500);
     }
   }
@@ -250,17 +277,31 @@ window.__netscopeAiAgent = (() => {
       parseError = err;
     }
 
-    h.onToolCall(name, parseError ? String(call.function.arguments || "") : args);
-    const t0 = Date.now();
-    let out;
     if (parseError) {
-      out = JSON.stringify({
+      h.onToolCall(name, String(call.function.arguments || ""));
+      const out = JSON.stringify({
         error: "arguments were not valid JSON: " + String(parseError.message || parseError).slice(0, 120),
         hint: "Send the arguments again as a single valid JSON object."
       });
-    } else {
-      out = await T().runTool(name, args, run);
+      h.onToolResult(name, out, 0);
+      return out;
     }
+
+    const ask = await T().approvalFor(name, args, run.settings.approval);
+    if (ask) {
+      const approved = await h.onApproval(ask, run.controller.signal);
+      if (run.cancelled) return JSON.stringify({ error: "run cancelled by the user" });
+      if (!approved) {
+        h.onToolCall(name, args);
+        const out = JSON.stringify({ error: "The user declined this action. Do not retry it; explain or offer an alternative." });
+        h.onToolResult(name, out, 0);
+        return out;
+      }
+    }
+
+    h.onToolCall(name, args);
+    const t0 = Date.now();
+    const out = await T().runTool(name, args, run);
     h.onToolResult(name, out, Date.now() - t0);
     return out;
   }
@@ -288,7 +329,7 @@ window.__netscopeAiAgent = (() => {
       return;
     }
 
-    const state = { controller: new AbortController(), cancelled: false, spent: 0, started: Date.now() };
+    const state = { controller: new AbortController(), cancelled: false, spent: 0, started: Date.now(), settings };
     currentRun = state;
 
     if (!messages.length) messages.push({ role: "system", content: systemPrompt() });
@@ -297,7 +338,7 @@ window.__netscopeAiAgent = (() => {
     h.onUserMessage(seed.display || seed.text);
     pruneHistory();
 
-    const maxIterations = spec.maxIterations || settings.maxIterations || 8;
+    const maxIterations = Math.max(spec.maxIterations || 0, settings.maxIterations || 12);
     let finished = false;
     let reason = "complete";
 
@@ -315,10 +356,11 @@ window.__netscopeAiAgent = (() => {
           messages,
           tools: T().TOOLS,
           tool_choice: i === 0 && spec.forceTool ? "required" : "auto",
-          reasoning_effort: i === 0 ? "low" : settings.reasoningEffort,
+          reasoning_effort: settings.reasoningEffort,
           signal: state.controller.signal,
           onDelta: h.onDelta,
-          onRetry: (err, n) => h.onStatus(`${err.message} retrying (${n}/2)…`)
+          onReasoning: h.onReasoning,
+          onRetry: (err, n) => h.onStatus(`${err.message} Retrying (${n}/2)…`)
         });
         h.onAssistantEnd(turn.assistantMessage.content || "");
         if (turn.usage) h.onUsage(turn.usage);
@@ -359,7 +401,8 @@ window.__netscopeAiAgent = (() => {
           messages,
           reasoning_effort: settings.reasoningEffort,
           signal: state.controller.signal,
-          onDelta: h.onDelta
+          onDelta: h.onDelta,
+          onReasoning: h.onReasoning
         });
         h.onAssistantEnd(final.assistantMessage.content || "");
         if (final.usage) h.onUsage(final.usage);
@@ -380,5 +423,5 @@ window.__netscopeAiAgent = (() => {
     h.onDone(reason);
   }
 
-  return { run, cancel, isRunning, newConversation, contextChars };
+  return { run, cancel, isRunning, newConversation, contextChars, getMessages, setMessages };
 })();

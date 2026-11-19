@@ -1,112 +1,31 @@
-# NetScope — search Network responses & WebSockets from DevTools
+# NetScope — an AI API copilot that lives on the page
 
-Chrome's Network panel only filters by URL. NetScope is a native DevTools panel
-that indexes everything the page transfers and lets you search inside it:
+Click the NetScope icon (or press `Alt+Shift+N`) on any page and a popup opens **on the
+Chat tab**. Ask Kimi about the requests the page is making, have it call endpoints for you
+from a cURL, or turn a sequence of calls into a flow that runs every hour. No DevTools
+needed.
 
-- **Response bodies** — find which request actually returned `"userId":48212` or an error string.
-- **Request bodies & headers** — both directions, both header sets.
-- **Live WebSocket frames** — every sent/received frame is captured and searchable, per direction.
-- **Duplicates grouped by default** — requests with the same input (method + URL + request body)
-  and identical WS frames collapse into one row with a ×N badge. Responses may differ across a
-  group (polling, retries); mixed statuses get a warning-tinted badge and a per-status breakdown
-  in the detail pane. Untick "Group duplicates" to see every occurrence.
-- **Duplicate grouping (on by default)** — repeat polls, retries and identical
-  heartbeat frames collapse into a single row with a `×N` count instead of
-  flooding the list.
-- **Copy as cURL** — replay any captured HTTP request 1:1 (headers and body included).
-- **WS tooling** — one-click `websocat` / `wscat` commands and a cURL handshake probe per socket.
-- **Export AsyncAPI 3.0** — turn the captured WebSocket traffic into an AsyncAPI skeleton
-  (servers, channels, send/receive operations, real captured payloads as message examples).
-- **AI assistant (opt-in)** — ask Kimi K3 what an endpoint does, why a request failed, or how
-  the whole API surface fits together. Off until you add your own key; see below.
+![Kimi creating a request, saving a two-step flow and running it](docs/popup-chat.png)
 
-Search supports plain text or regex, case toggle, per-field scopes
-(`url · req-h · req-b · res-h · res-b · ws`), a resource-type filter, and "Found in" chips
-showing exactly where each hit lives. `Enter` jumps to the next match; matches are
-highlighted in the detail pane. `Preserve log` keeps entries across navigations.
-
-## Duplicate grouping
-
-Two entries are considered the same only when **everything** that defines them
-matches:
-
-- HTTP — method, full URL, status, request body, and response body (binary
-  bodies compare by size). Requests whose body is still downloading are never
-  grouped, so a response that turns out to differ can't be hidden.
-- WebSocket — socket URL, direction, and the exact frame payload.
-
-The kept row is the **first** occurrence, badged `×N`; opening it shows the
-count with first and last timestamps and an **Ungroup** button. Untick
-**Group duplicates** in the toolbar to see every entry individually. Grouping is
-applied after filtering, so the match count always equals the number of rows
-you can actually step through with `Enter`.
-
-## AI assistant
-
-Search tells you *where* a string appears. It can't tell you why a `422` came back, or what
-an unfamiliar endpoint is for. The **AI** button in the toolbar (`Alt`/`⌥` + `A`) opens a sidebar
-that can, using [Kimi K3](https://platform.kimi.ai/docs) and your own Moonshot API key.
-
-It is **agentic**, not a prompt stuffed with your traffic. The model gets tools to query the
-capture and drills down the way you would:
-
-| Tool | What it does |
-| --- | --- |
-| `get_capture_summary` | Counts, hosts, status histogram |
-| `list_endpoints` | Requests grouped by method + host + normalized path (`/orders/:id`) |
-| `list_requests` | Filtered, sorted, paginated list — one line each, no bodies |
-| `search_traffic` | Text/regex across URLs, headers, bodies and WS frames; returns snippets |
-| `get_request` | One entry in full, with paging through large bodies |
-| `describe_json` | A body's *shape* — keys, types, array lengths — collapsing 1 MB to ~900 chars |
-| `get_websocket_frames` | Frames for one socket, with heartbeats collapsed |
-| `compare_requests` | Diffs a success against a failure to explain the difference |
-
-Three one-click actions: **Summarize API structure** (whole capture), and **Explain** /
-**Debug** on the selected request — Debug appears only on 4xx/5xx and network failures.
-Answers cite entry ids like `#412`; click one to jump to that row. Every tool call is shown
-collapsed in the transcript and expands to the exact payload that left your machine.
-
-### Setup
-
-1. Get a key from [platform.moonshot.ai](https://platform.moonshot.ai) — a spend-capped one is wise.
-2. Click **AI** → paste the key → tick the consent box → **Save & enable**. **Test** verifies it.
-3. Ask away, or hit a quick action.
-
-The key is stored with `chrome.storage.local` on this machine only. It is never synced through
-your Google account and never sent anywhere but `api.moonshot.ai`. **Forget key** removes it.
-
-### What gets sent
-
-Whatever the tools return: URLs, headers and body excerpts from the page you are inspecting.
-**Redaction is off by default**, so that includes live session tokens, cookies and any personal
-data the page transfers. Tick **Mask secrets before sending** to replace `Authorization` and
-`Cookie` values with shape hints (`<redacted Bearer JWT, expired 3m ago>`) and scrub
-token-shaped strings from bodies and URLs; a second checkbox also masks email, card and SSN
-patterns. Masking is best-effort — it cannot catch a secret sitting in an arbitrary JSON field.
-Nothing is sent until you have entered a key and consented, and nothing is sent on its own:
-every request is one you triggered.
-
-## Screenshots
-
-Search a value and see every request that carried it, highlighted in context:
-
-![Searching for a SKU across response bodies and WebSocket frames](docs/screenshot-1-search.png)
-
-Ask why a request failed — the assistant queries the capture and cites the entries it used:
-
-![The AI assistant diagnosing a 422 from the captured traffic](docs/screenshot-2-ai-debug.png)
-
-Or have it map the whole API surface:
-
-![The AI assistant summarizing the captured API surface](docs/screenshot-3-ai-summary.png)
-
-Every WebSocket frame, by direction, with pretty-printed payloads:
-
-![WebSocket frames captured live](docs/screenshot-4-websockets.png)
-
-Replay any request outside the browser:
-
-![Copy as cURL, headers and body included](docs/screenshot-5-curl.png)
+- **Chat first** — the popup opens on a conversation with Kimi, grounded in the page's real
+  traffic through tools (it cites requests as `#412`; click one to open it).
+- **Kimi models in the dropdown** — `kimi-k3.1-pro` (default), `kimi-k3.1-pro-highspeed`,
+  `kimi-k3`, plus the legacy `kimi-k2.7-code` and `kimi-k2.6`. A second dropdown sets
+  thinking depth (Quick / Deep / Max → `reasoning_effort` low / high / max).
+- **Call APIs like Postman** — paste a cURL into the chat, or ask Kimi to replay a captured
+  request with changes. Requests run from the extension (no CORS), are logged in Traffic
+  tagged *AI*, *You* or *Flow*, and anything that can change data waits for your click.
+- **Flows (Zapier-style automations)** — chain requests where later steps use values from
+  earlier responses (`{{steps.list_orders.body.items[0].id}}`), add conditions and AI steps,
+  run on demand or on a schedule (every N minutes) in the background.
+- **Keep logs on reload** — one switch in the popup header keeps the captured traffic (and
+  the chat) across page reloads and navigations.
+- **Traffic** — everything the old DevTools panel did, in the popup: full-text/regex search
+  across URLs, headers, bodies and WebSocket frames, grouped repeats, request/response
+  detail, **Edit & send** (Postman-style resend from an editable cURL), Copy cURL, and
+  AsyncAPI 3.0 export for WebSocket traffic.
+- **Expandable** — panel (460 px), large (near full screen, list + detail side by side), a
+  pill with a live traffic trace, or hidden.
 
 ## Install (unpacked)
 
@@ -114,76 +33,141 @@ Replay any request outside the browser:
 git clone https://github.com/taishi55/NetScope.git
 ```
 
-1. Open `chrome://extensions`
-2. Enable **Developer mode** (top right)
-3. **Load unpacked** → select the cloned `NetScope` folder
-4. Open DevTools on any page (`F12`) → pick the **NetScope** tab (it may hide behind `»`)
-5. **Reload the page once** so the WebSocket hook is in place before the app connects
+1. Open `chrome://extensions`, enable **Developer mode**.
+2. **Load unpacked** → select the cloned `NetScope` folder.
+3. Pin the NetScope icon. On any page, click it (or press `Alt+Shift+N`).
+4. Reload pages that were open before installing, so the capture hook is in place from the
+   first request.
+
+## Chat with Kimi
+
+Open **Settings** (gear icon) → paste a key from [platform.moonshot.ai](https://platform.moonshot.ai)
+→ tick the consent box → **Save and enable**. **Test key** checks the key and model access
+with a free `GET /v1/models` call.
+
+Things to try:
+
+- “Map the API this page uses.”
+- “Why did the last request fail?” — or select a request in Traffic and ask; the chip above
+  the input tells Kimi which request you mean.
+- Paste `curl 'https://api.example.com/v1/me' -H 'Authorization: Bearer …'` — Kimi runs it
+  and explains the response.
+- “Every hour, get the newest order and post its id to https://hooks.example.com/x.”
+
+### Tools Kimi can use
+
+| Tool | What it does |
+| --- | --- |
+| `get_capture_summary`, `list_endpoints`, `list_requests`, `search_traffic` | Orient in the capture, find requests |
+| `get_request`, `describe_json`, `get_websocket_frames`, `compare_requests`, `get_curl` | Drill into one request or diff two |
+| `http_request` | Send a request from a cURL, a captured request (`from_id`, real headers copied locally) or a URL, with overrides |
+| `save_flow`, `run_flow`, `list_flows`, `get_flow`, `delete_flow` | Build, test, schedule and manage flows |
+
+### What waits for your approval
+
+Settings → **Ask before Kimi acts**:
+
+- **For changes** (default) — POST/PUT/PATCH/DELETE requests, saving a flow that has a
+  schedule or write steps, running a flow with write steps, deleting a flow.
+- **For every request** — also GETs.
+- **Never** — autopilot.
+
+The approval card shows the exact method, URL, headers (secrets abbreviated) and body.
+
+## Flows
+
+A flow is an ordered list of steps. Build one by asking Kimi, or **Flows → New flow** for a
+JSON editor:
+
+```json
+{
+  "name": "Newest order check",
+  "steps": [
+    { "id": "list_orders", "method": "GET", "url": "https://shop.example.com/api/orders",
+      "extract": { "first_id": "body.items[0].id" } },
+    { "id": "get_order", "method": "GET", "url": "https://shop.example.com/api/orders/{{vars.first_id}}",
+      "when": "{{vars.first_id}} exists", "expect_status": "2xx" },
+    { "id": "summary", "type": "ai", "prompt": "One line on this order: {{steps.get_order.body | json}}" }
+  ],
+  "schedule": { "enabled": true, "every_minutes": 60 }
+}
+```
+
+- **Step types** — `http` (`method/url/headers/body/query`, or `curl`, or Kimi's `from_id`),
+  `ai` (a Kimi prompt over earlier results), `delay` (`ms`).
+- **Templates** — `{{vars.x}}`, `{{steps.<id>.status}}`, `{{steps.<id>.body.<path>}}`,
+  `{{steps.<id>.headers.<name>}}`, `{{now}}`, `{{now_iso}}`, `{{today}}`, `{{uuid}}`; filters
+  `| json | urlencode | first | last | length | trim | upper | lower | default:x`. A JSON body
+  value that is exactly one template keeps its type.
+- **Per step** — `extract`, `when` (`==`, `!=`, `>`, `<`, `>=`, `<=`, `contains`,
+  `!contains`, `matches`, `exists`, `missing`), `expect_status`, `continue_on_error`.
+- **Schedules** run in the background worker via `chrome.alarms` while Chrome is open, even
+  with the original page closed. A scheduled run that fails puts a red `!` on the toolbar
+  icon and a notice in the Flows tab. The last 15 runs per flow are kept.
+
+![Flows tab with step results from the last run](docs/popup-flows.png)
+
+## Traffic
+
+![Large mode: the captured list beside a request's detail](docs/popup-traffic.png)
+
+Search is plain text or regex with a case toggle and per-field scopes; `Enter` jumps to the
+next match. Identical requests group into one row with `×N` (a warning tint if their
+statuses differ). **Edit & send** turns any request into an editable cURL you can resend;
+**New request** starts from a blank one.
 
 ## How it works
 
 ```
-page (MAIN world)        isolated world        service worker         DevTools
-ws-hook.js  ──postMessage──▶ ws-bridge.js ──sendMessage──▶ background.js ──port──▶ devtools.js ──▶ panel
-   │                                                                        ▲                       │
-   └─ wraps window.WebSocket (send + message)                               │                       │
-                                                                            │                  ai-*.js
-chrome.devtools.network.onRequestFinished + getContent  (HTTP + bodies) ────┘                       │
-                                                                                                    ▼
-                                                          only when you ask ──▶ api.moonshot.ai (your key)
+page (MAIN world)          isolated world          service worker                  popup (iframe)
+net-hook.js ─postMessage─▶ content.js ─sendMessage─▶ background.js ──port──────────▶ app.html
+  wraps fetch, XHR,          hosts the popup           per-tab log (IndexedDB)          Chat · Traffic · Flows
+  WebSocket                  iframe                    request runner, flows, alarms ─▶ api.moonshot.ai (your key)
 ```
 
-- `devtools.js` runs for the whole DevTools session, so HTTP capture starts the moment
-  DevTools opens (plus a `getHAR` backfill of anything the Network panel already recorded).
-- WebSocket frames are mirrored by a tiny `Proxy` around `window.WebSocket`; native behavior
-  is untouched. The background worker routes frames to the DevTools instance inspecting that
-  tab and keeps a small backlog so frames fired just before the panel connects aren't lost.
-- No `chrome.debugger`, so the "extension is debugging this browser" bar never appears.
-- The AI code (`ai-tools.js`, `ai-client.js`, `ai-agent.js`, `ai-panel.js`) runs in the panel
-  document, where the capture already lives as a plain JS object — no serializing thousands of
-  entries across a port, and no run dying when the MV3 service worker suspends. It ships in the
-  package; no remote code is ever fetched or executed.
-
-## Why a DevTools panel and not a Network-panel sidebar
-
-Chrome's extension API only allows sidebars inside the **Elements** and **Sources** panels —
-there is no API to extend the Network panel itself. A dedicated DevTools panel is the closest
-native integration Chrome permits, and it follows the DevTools theme (dark/light) automatically.
+- **Capture** — `net-hook.js` wraps `fetch`, `XMLHttpRequest` and `WebSocket` with Proxies
+  at `document_start`, so native behavior and `toString()` are unchanged. Response bodies are
+  read from a clone (cancelled once the cap is reached), streamed bodies update live.
+- **Popup** — `content.js` injects an extension-page iframe inside a closed shadow root. The
+  UI runs in the iframe, cross-origin to the page, so the page cannot read it or keylog the
+  API key field.
+- **Log** — the background worker owns a per-tab log, mirrored to IndexedDB so it survives
+  service-worker restarts and, with **Keep logs on reload**, page reloads. Without the switch
+  each new document starts a fresh log. The database is wiped when the browser starts.
+- **Requests and flows** run in the background worker with the extension's host permission
+  (no CORS) and the browser's own cookies for the target site.
 
 ## Caveats
 
-- WebSocket capture hooks `window.WebSocket` at `document_start`: pages loaded **before**
-  installing/reloading the extension, and sockets opened inside **Workers**, are not seen.
-- HTTP is only captured **while DevTools is open** (a Chrome platform limit, same as the HAR).
-- Bodies are truncated at 1 MB and WS frames at 256 KB (constants at the top of
-  `devtools.js` / `ws-hook.js`); binary bodies are flagged and skipped by search.
-- Ring buffer keeps the last 4 000 entries.
-- Generated cURL includes captured cookies/authorization headers verbatim — treat it as a secret.
-- `<all_urls>` content-script access is required to hook WebSockets everywhere; narrow the
-  `matches` patterns in `manifest.json` if you only debug specific hosts.
-- Using the AI assistant transmits excerpts of the captured traffic to a third party
-  (Moonshot AI). It is off by default and each request is one you triggered, but the data does
-  leave your machine — see [What gets sent](#what-gets-sent).
-- Chat transcripts are not persisted; they are gone when the DevTools session ends.
+- Only traffic the page's own JavaScript makes is captured (fetch, XHR, WebSocket).
+  Documents, images, scripts and requests from Service/Web Workers are not.
+- Request headers are the ones the page set; the browser adds cookies, user-agent and
+  similar itself. Scripts cannot set `Cookie`, `Origin`, `Referer` or `User-Agent`, so a
+  cURL containing them is sent without them (reported as *Not sent*) and the browser's own
+  cookies for that site are used.
+- Bodies and frames are captured up to 256 KB; requests NetScope sends keep up to 1 MB. Each
+  tab keeps the last 3,000 entries.
+- Pages where extensions cannot run (`chrome://`, the Web Store) open NetScope as a
+  standalone tab instead.
+- Generated cURL commands include captured auth headers verbatim — treat them as secrets.
 
 ## Permissions
 
-- `clipboardWrite` — the various Copy buttons.
-- `storage` — stores the AI assistant's API key and settings locally (`chrome.storage.local`,
-  never `chrome.storage.sync`). Nothing else is persisted.
-- `https://api.moonshot.ai/*` — the AI assistant's only outbound destination, and the only host
-  this extension can reach at all. Unused until you enable the assistant.
-- Content scripts on `<all_urls>` — the WebSocket hook + bridge (see note above).
+- `<all_urls>` content scripts and host permission — the capture hook must be in place on
+  whichever page you debug, and the request runner and flows must reach whichever API you
+  point them at.
+- `storage` — settings, API key, flows and run history (`chrome.storage.local`), chat per tab
+  (`chrome.storage.session`). The capture log lives in the extension's IndexedDB.
+- `alarms` — flow schedules.
+- `scripting` — injects the capture hook into tabs that were open before installing.
+- `clipboardWrite` — the Copy buttons.
 
 ## Privacy
 
-Capture is entirely local: traffic lives in memory, on your machine, for the current DevTools
-session. NetScope has no analytics, telemetry, or error reporting, and never contacts the
-developer.
-
-The optional AI assistant is the one exception, and only when you enable and use it: it sends
-selected excerpts of the captured traffic, plus your question, to `api.moonshot.ai` using your
-own API key. Moonshot's policy governs that data. Full policy: [PRIVACY.md](PRIVACY.md).
+NetScope has no analytics, telemetry or error reporting, and never contacts its developer.
+Data leaves your machine only when you, or a flow you saved, ask for it: questions and
+traffic excerpts go to `api.moonshot.ai` with your key, and requests you or Kimi send go to
+the URLs they name. Full policy: [PRIVACY.md](PRIVACY.md).
 
 ## License
 

@@ -1,6 +1,8 @@
 /* NetScope – ai-tools.js
- * The tools the AI assistant uses to query the capture, plus the redaction
- * layer every one of them routes through.
+ * The tools Kimi uses: read the capture, send requests (Postman-style, from a
+ * cURL, a captured request, or a URL), and build/run/schedule flows — plus
+ * the redaction layer every one of them routes through, and the approval
+ * rules for actions that change things.
  *
  * Two invariants hold here and nowhere else:
  *   1. Redaction runs inside the executors, so no tool can bypass it. It ships
@@ -300,9 +302,10 @@ window.__netscopeAiTools = (() => {
       .join("/");
   }
 
-  function isStatic(e) {
-    const b = typeof typeBucket === "function" ? typeBucket(e) : "other";
-    return b === "js" || b === "media";
+  // The in-page hook only sees fetch/XHR/WebSocket, so there are no static
+  // assets to skip; kept so include_static stays a harmless no-op.
+  function isStatic() {
+    return false;
   }
 
   function percentile(sorted, p) {
@@ -1109,6 +1112,416 @@ window.__netscopeAiTools = (() => {
     return capResult(out, 8000);
   }
 
+  /* --------------------------------------------------- outgoing requests */
+
+  const CURL = () => globalThis.__netscopeCurl;
+  const MASKED = /<redacted[^>]*>|<jwt redacted>|<email redacted>|<card redacted>|<ssn redacted>|=REDACTED\b/;
+  const isWriteMethod = (m) => !/^(GET|HEAD|OPTIONS)$/i.test(m || "GET");
+
+  function headerListFrom(obj) {
+    if (!obj) return [];
+    if (Array.isArray(obj)) return obj.filter((h) => h && h.name).map((h) => ({ name: String(h.name), value: String(h.value == null ? "" : h.value) }));
+    return Object.keys(obj).map((name) => ({ name, value: obj[name] }));
+  }
+
+  // Builds the concrete request from from_id / curl / url plus overrides.
+  // Synchronous, so the approval card can show exactly what will be sent.
+  function buildRequest(a) {
+    let base;
+    if (a.from_id != null) {
+      const e = entryById(Number(a.from_id));
+      if (!e || e.kind !== "http") throw new Error(`no captured HTTP request with id ${a.from_id}`);
+      base = {
+        method: e.method,
+        url: e.url,
+        headers: (e.reqHeaders || []).map((h) => ({ name: h.name, value: h.value })),
+        body: e.reqBody || null
+      };
+    } else if (a.curl) {
+      const parsed = CURL().parse(a.curl);
+      base = { method: parsed.method, url: parsed.url, headers: parsed.headers, body: parsed.body, warnings: parsed.warnings };
+    } else if (a.url) {
+      base = { method: "GET", url: String(a.url), headers: [], body: null };
+    } else {
+      throw new Error("give one of: curl, from_id, or url");
+    }
+    if (a.method) base.method = String(a.method).toUpperCase();
+    if (a.url && (a.from_id != null || a.curl)) base.url = String(a.url);
+    if (a.query && typeof a.query === "object") {
+      const u = new URL(base.url);
+      for (const k of Object.keys(a.query)) {
+        if (a.query[k] === null) u.searchParams.delete(k);
+        else u.searchParams.set(k, typeof a.query[k] === "object" ? JSON.stringify(a.query[k]) : String(a.query[k]));
+      }
+      base.url = u.toString();
+    }
+    if (a.headers && typeof a.headers === "object") {
+      for (const h of headerListFrom(a.headers)) {
+        const i = base.headers.findIndex((x) => x.name.toLowerCase() === h.name.toLowerCase());
+        if (h.value === null || h.value === undefined) {
+          if (i >= 0) base.headers.splice(i, 1);
+        } else if (i >= 0) base.headers[i] = { name: h.name, value: String(h.value) };
+        else base.headers.push({ name: h.name, value: String(h.value) });
+      }
+    }
+    if (a.body !== undefined) {
+      if (a.body === null) base.body = null;
+      else if (typeof a.body === "string") base.body = a.body;
+      else {
+        base.body = JSON.stringify(a.body);
+        if (!base.headers.some((h) => /^content-type$/i.test(h.name))) base.headers.push({ name: "Content-Type", value: "application/json" });
+      }
+    }
+    base.method = String(base.method || "GET").toUpperCase();
+    if (!/^https?:\/\//i.test(base.url)) throw new Error("url must start with http:// or https://");
+    // A masked value can only have come from a tool result; sending it would
+    // just fail auth. Steer toward from_id, which copies the real value locally.
+    const sent = JSON.stringify([base.url, base.headers, base.body]);
+    const m = MASKED.exec(sent);
+    if (m) {
+      throw new Error(
+        `the request contains a masked placeholder (${m[0]}). Masked values never reach you, so they cannot be sent. ` +
+          "Use from_id to replay a captured request — NetScope copies its real headers locally — and override only what must change."
+      );
+    }
+    return base;
+  }
+
+  function jsonOrNull(text) {
+    const t = (text || "").trim();
+    if (!t || !(t.startsWith("{") || t.startsWith("["))) return undefined;
+    try {
+      return JSON.parse(t);
+    } catch (_) {
+      return undefined;
+    }
+  }
+
+  async function toolHttpRequest(args) {
+    const a = args || {};
+    let req;
+    try {
+      req = buildRequest(a);
+    } catch (err) {
+      return JSON.stringify({ error: String(err.message || err) });
+    }
+    if (!api || !api.rpc) return JSON.stringify({ error: "request runner unavailable" });
+    let res;
+    try {
+      res = await api.rpc("http", {
+        request: { method: req.method, url: req.url, headers: req.headers, body: req.body },
+        source: "ai",
+        timeoutMs: a.timeout_ms
+      });
+    } catch (err) {
+      return JSON.stringify({ error: String(err.message || err) });
+    }
+
+    const bodyMax = Math.min(Math.max(200, a.body_max || 6000), 20000);
+    const out = {
+      request: { method: req.method, url: clipUrl(req.url, 400), headers: redactHeaders(req.headers) },
+      status: res.status,
+      status_text: res.statusText || "",
+      ok: !!res.ok,
+      ms: res.ms,
+      mime: res.mime || "",
+      bytes: res.size || 0
+    };
+    if (res.url && res.url !== req.url) out.final_url = clipUrl(res.url, 400);
+    if (res.entryId) out.captured_as = "#" + res.entryId;
+    if (res.error) out.error = res.error;
+    if (res.droppedHeaders && res.droppedHeaders.length) {
+      out.dropped_headers = res.droppedHeaders;
+      out.dropped_note = "Browsers forbid scripts from setting these. The browser's own cookies for the host were sent instead.";
+    }
+    if (req.warnings && req.warnings.length) out.curl_warnings = req.warnings;
+    out.headers = redactHeaders(res.headers || []);
+    if (res.binary) out.body = { note: "binary body, not shown" };
+    else {
+      const parsed = jsonOrNull(res.body);
+      if (parsed !== undefined && (res.body || "").length > bodyMax) {
+        const counters = { truncated: 0 };
+        out.body_shape = shapeOf(parsed, 0, 4, 60, counters);
+      }
+      out.body = bodySlice(res.body || "", 0, bodyMax, BODY_BUDGET);
+      if (res.bodyTruncated) out.body_capture_truncated = true;
+    }
+    return capResult(out, 24000);
+  }
+
+  function toolGetCurl(args) {
+    const e = entryById((args || {}).id);
+    if (!e || e.kind !== "http") return JSON.stringify({ error: `no captured HTTP request with id ${(args || {}).id}` });
+    const headers = redactHeaders(e.reqHeaders);
+    const curl = CURL().build({ method: e.method, url: clipUrl(e.url, 4000), headers, body: scrubText(e.reqBody || "") });
+    return capResult(
+      {
+        id: e.id,
+        curl,
+        note: redactOn
+          ? "Secret values are masked here. To resend with the real values, call http_request with from_id."
+          : "Headers are as the page set them; the browser adds cookies itself."
+      },
+      12000
+    );
+  }
+
+  /* --------------------------------------------------------------- flows */
+
+  function redactStep(st) {
+    const s = JSON.parse(JSON.stringify(st));
+    if (s.headers) {
+      const red = redactHeaders(headerListFrom(s.headers));
+      s.headers = red;
+    }
+    if (typeof s.curl === "string") s.curl = scrubText(s.curl);
+    if (typeof s.url === "string") s.url = clipUrl(s.url, 1000);
+    if (typeof s.body === "string") s.body = scrubText(s.body);
+    return s;
+  }
+
+  function flowBrief(f) {
+    return {
+      id: f.id,
+      name: f.name,
+      description: f.description || "",
+      steps: (f.steps || []).length,
+      schedule: f.schedule && f.schedule.enabled ? `every ${f.schedule.every_minutes} min` : "manual only",
+      last_run: f.lastRun
+        ? { at: new Date(f.lastRun.at).toISOString(), ok: f.lastRun.ok, ms: f.lastRun.ms, error: f.lastRun.error || undefined, trigger: f.lastRun.trigger }
+        : null
+    };
+  }
+
+  // Steps given as { from_id } are expanded here, in the extension, so the
+  // flow stores the real captured headers without the model ever seeing them.
+  function materializeSteps(steps) {
+    return (steps || []).map((st, i) => {
+      const s = Object.assign({}, st);
+      if (!s.type) s.type = s.prompt ? "ai" : s.ms != null ? "delay" : "http";
+      if (s.type === "http" && s.from_id != null) {
+        const e = entryById(Number(s.from_id));
+        if (!e || e.kind !== "http") throw new Error(`step ${s.id || i + 1}: no captured HTTP request with id ${s.from_id}`);
+        const headers = {};
+        for (const h of e.reqHeaders || []) headers[h.name] = h.value;
+        if (s.headers && typeof s.headers === "object") Object.assign(headers, s.headers);
+        s.method = (s.method || e.method || "GET").toUpperCase();
+        s.url = s.url || e.url;
+        s.headers = headers;
+        if (s.body === undefined && e.reqBody) s.body = jsonOrNull(e.reqBody) !== undefined ? jsonOrNull(e.reqBody) : e.reqBody;
+        s.source_entry = e.id;
+        delete s.from_id;
+      }
+      if (s.type === "http") {
+        const m = MASKED.exec(JSON.stringify([s.url, s.headers, s.body, s.curl]));
+        if (m) throw new Error(`step ${s.id || i + 1} contains a masked placeholder (${m[0]}); use from_id so NetScope copies the real captured values`);
+      }
+      return s;
+    });
+  }
+
+  // The flow save_flow would store: args merged over the existing flow when
+  // updating, so omitted fields (steps, schedule …) keep their current value.
+  // Used by both the tool and the approval gate, so what is approved is what
+  // gets saved.
+  async function resolveFlowArgs(a) {
+    let existing = null;
+    if (a.id) {
+      existing = await api.rpc("flows.get", { id: a.id });
+      if (!existing && !a.steps) throw new Error(`no flow with id ${a.id}`);
+    }
+    const prev = (existing && existing.schedule) || { enabled: false, every_minutes: 60 };
+    let schedule;
+    if (a.every_minutes != null) schedule = { enabled: a.schedule_enabled !== false && Number(a.every_minutes) > 0, every_minutes: Number(a.every_minutes) || 60 };
+    else if (a.schedule_enabled != null) schedule = { enabled: !!a.schedule_enabled, every_minutes: prev.every_minutes || 60 };
+    else schedule = prev;
+    const flow = {
+      name: a.name || (existing && existing.name),
+      description: a.description != null ? a.description : (existing && existing.description) || "",
+      steps: a.steps ? materializeSteps(a.steps) : (existing && existing.steps) || [],
+      vars: a.vars || (existing && existing.vars) || {},
+      schedule
+    };
+    if (a.id) flow.id = a.id;
+    return flow;
+  }
+
+  async function toolSaveFlow(args) {
+    const a = args || {};
+    let flow;
+    try {
+      flow = await resolveFlowArgs(a);
+      const saved = await api.rpc("flows.save", { flow });
+      return capResult(
+        {
+          saved: true,
+          flow: flowBrief(saved),
+          step_ids: saved.steps.map((s) => s.id),
+          hint: "Run it with run_flow to verify every step before relying on the schedule."
+        },
+        4000
+      );
+    } catch (err) {
+      return JSON.stringify({ error: String(err.message || err) });
+    }
+  }
+
+  async function toolListFlows() {
+    try {
+      const flows = await api.rpc("flows.list");
+      return capResult({ total: flows.length, flows: flows.map(flowBrief) }, 8000);
+    } catch (err) {
+      return JSON.stringify({ error: String(err.message || err) });
+    }
+  }
+
+  function runBrief(run) {
+    return {
+      ok: run.ok,
+      error: run.error || undefined,
+      trigger: run.trigger,
+      at: new Date(run.startedAt).toISOString(),
+      ms: run.ms,
+      steps: (run.steps || []).map((s) => ({
+        id: s.id,
+        type: s.type,
+        ok: s.ok,
+        skipped: s.skipped || undefined,
+        status: s.status,
+        method: s.method,
+        url: s.url ? clipUrl(s.url, 200) : undefined,
+        ms: s.ms,
+        captured_as: s.entryId ? "#" + s.entryId : undefined,
+        error: s.error || undefined,
+        note: s.note || undefined,
+        extracted: s.extracted ? JSON.parse(scrubText(JSON.stringify(s.extracted))) : undefined,
+        output: s.output ? scrubText(String(s.output).slice(0, 1500)) : undefined
+      })),
+      vars: run.vars ? JSON.parse(scrubText(JSON.stringify(run.vars))) : undefined
+    };
+  }
+
+  async function toolGetFlow(args) {
+    try {
+      const f = await api.rpc("flows.get", { id: (args || {}).id });
+      if (!f) return JSON.stringify({ error: `no flow with id ${(args || {}).id}` });
+      const runs = await api.rpc("flows.runs", { id: f.id });
+      return capResult(
+        Object.assign(flowBrief(f), {
+          vars: f.vars || {},
+          steps: (f.steps || []).map(redactStep),
+          recent_runs: runs.slice(0, 3).map(runBrief)
+        }),
+        16000
+      );
+    } catch (err) {
+      return JSON.stringify({ error: String(err.message || err) });
+    }
+  }
+
+  async function toolRunFlow(args) {
+    const a = args || {};
+    try {
+      const run = await api.rpc("flows.run", { id: a.id, vars: a.vars, trigger: "ai" });
+      return capResult(runBrief(run), 16000);
+    } catch (err) {
+      return JSON.stringify({ error: String(err.message || err) });
+    }
+  }
+
+  async function toolDeleteFlow(args) {
+    try {
+      const ok = await api.rpc("flows.delete", { id: (args || {}).id });
+      return JSON.stringify(ok ? { deleted: true } : { error: "no such flow" });
+    } catch (err) {
+      return JSON.stringify({ error: String(err.message || err) });
+    }
+  }
+
+  /* ----------------------------------------------------------- approvals */
+
+  // Hosts the page itself requested (not ones NetScope or Kimi sent to).
+  function knownHosts() {
+    const set = new Set();
+    for (const e of entries()) {
+      if (e.kind === "nav" || ((e.kind === "http" || e.wsId) && (!e.source || e.source === "page"))) {
+        const h = hostOf(e.url);
+        if (h) set.add(h);
+      }
+    }
+    return set;
+  }
+
+  // Returns null when the action may run straight away, otherwise a
+  // description for the approval card. policy: "writes" | "all" | "never".
+  async function approvalFor(name, args, policy) {
+    if (policy === "never") return null;
+    const a = args || {};
+    if (name === "http_request") {
+      let req;
+      try {
+        req = buildRequest(a);
+      } catch (_) {
+        return null; // the tool will return the error itself
+      }
+      // A read to a host the page itself talks to is routine. A read to any
+      // other host could carry captured secrets out in its URL (prompt
+      // injection via a response body), so it needs a click too.
+      let host = "";
+      try {
+        host = new URL(req.url).host;
+      } catch (_) {}
+      const known = knownHosts().has(host);
+      if (policy === "writes" && !isWriteMethod(req.method) && known) return null;
+      return {
+        kind: "http",
+        title: isWriteMethod(req.method)
+          ? "Kimi wants to send a request that can change data"
+          : known
+            ? "Kimi wants to send a request"
+            : `Kimi wants to call ${host || "a new host"}, which this page has not used`,
+        method: req.method,
+        url: req.url,
+        headers: req.headers,
+        body: req.body,
+        fromId: a.from_id
+      };
+    }
+    if (name === "save_flow") {
+      let flow;
+      try {
+        flow = await resolveFlowArgs(a);
+      } catch (_) {
+        return null; // the tool will return the error itself
+      }
+      const writes = (flow.steps || []).some((s) => s.type === "http" && (isWriteMethod(s.method) || (s.curl && /(-X|--request)\s+['"]?(POST|PUT|PATCH|DELETE)|--data|-d\s|--json/i.test(s.curl))));
+      if (policy === "writes" && !flow.schedule.enabled && !writes) return null;
+      return {
+        kind: "flow",
+        title: flow.schedule.enabled ? `Kimi wants to save a flow that runs every ${flow.schedule.every_minutes} min` : "Kimi wants to save a flow",
+        flow
+      };
+    }
+    if (name === "run_flow") {
+      let f = null;
+      try {
+        f = await api.rpc("flows.get", { id: a.id });
+      } catch (_) {}
+      if (!f) return null;
+      const writes = (f.steps || []).some((s) => s.type === "http" && (isWriteMethod(s.method) || (s.curl && /(-X|--request)\s+['"]?(POST|PUT|PATCH|DELETE)|--data|-d\s|--json/i.test(s.curl))));
+      if (policy === "writes" && !writes) return null;
+      return { kind: "flow-run", title: `Kimi wants to run the flow “${f.name}”`, flow: f };
+    }
+    if (name === "delete_flow") {
+      let f = null;
+      try {
+        f = await api.rpc("flows.get", { id: a.id });
+      } catch (_) {}
+      return { kind: "flow-delete", title: `Kimi wants to delete the flow “${f ? f.name : a.id}”`, flow: f };
+    }
+    return null;
+  }
+
   /* ----------------------------------------------------------- schemas */
 
   const TOOLS = [
@@ -1157,7 +1570,11 @@ window.__netscopeAiTools = (() => {
             url_contains: { type: "string" },
             host: { type: "string" },
             mime_contains: { type: "string" },
-            resource_type: { type: "string", enum: ["xhr", "doc", "js", "media", "ws", "other"] },
+            resource_type: {
+              type: "string",
+              enum: ["api", "netscope", "ws"],
+              description: "api = the page's fetch/XHR; netscope = requests sent from NetScope (by you, the user or a flow); ws = WebSocket."
+            },
             kind: { type: "string", enum: ["http", "ws-frame", "ws-open", "ws-close", "nav"] },
             since_t: { type: "integer", description: "Milliseconds since capture start." },
             until_t: { type: "integer" },
@@ -1279,6 +1696,99 @@ window.__netscopeAiTools = (() => {
           additionalProperties: false
         }
       }
+    },
+    {
+      type: "function",
+      function: {
+        name: "http_request",
+        description:
+          "Send an HTTP request, like Postman, and get the response. Give exactly one base: `curl` (a cURL command, e.g. one the user pasted), `from_id` (replay a captured request with the real headers the page set; the browser adds its own cookies), or `url`. Then optionally override method, url, query, headers (null removes one) or body. Runs from the extension, so CORS does not apply. The request is logged in the Traffic list. Requests that can change data may need the user's approval first.",
+        parameters: {
+          type: "object",
+          properties: {
+            curl: { type: "string", description: "A full cURL command." },
+            from_id: { type: "integer", description: "Captured entry id to replay." },
+            url: { type: "string" },
+            method: { type: "string", description: "GET, POST, PUT, PATCH, DELETE …" },
+            query: { type: "object", description: "Query parameters to set (null removes one)." },
+            headers: { type: "object", description: "Headers to set or replace (null removes one)." },
+            body: { description: "String, or a JSON value (sent as application/json)." },
+            body_max: { type: "integer", description: "Response chars to return. Default 6000, max 20000." },
+            timeout_ms: { type: "integer", description: "Default 30000, max 120000." }
+          },
+          additionalProperties: false
+        }
+      }
+    },
+    {
+      type: "function",
+      function: {
+        name: "get_curl",
+        description: "A captured HTTP request as a cURL command (secrets masked if masking is on). Useful to show the user or as a base for a flow step.",
+        parameters: { type: "object", properties: { id: { type: "integer" } }, required: ["id"], additionalProperties: false }
+      }
+    },
+    {
+      type: "function",
+      function: {
+        name: "save_flow",
+        description:
+          "Create or update a flow: an ordered chain of steps that can run on demand or on a schedule (every N minutes, in the background, even with the page closed). Pass `id` to update; omit `steps` when only renaming or rescheduling. " +
+          "Step types: http {id, method, url, headers, body, query} or {id, curl} or {id, from_id} (copies a captured request's real headers locally); ai {id, prompt} (Kimi processes data from earlier steps); delay {id, ms}. " +
+          "Any step may have: extract {var: 'body.data.token'} (paths into that step's response: status, headers.<lowercase>, body.<path>, text), when '<expr>', expect_status '2xx' or '200,201', continue_on_error. " +
+          "Templates in url/headers/body/prompt/when: {{vars.name}}, {{steps.<id>.status}}, {{steps.<id>.body.items[0].id}}, {{steps.<id>.headers.etag}}, {{now}}, {{now_iso}}, {{today}}, {{uuid}}; filters | json | urlencode | first | last | length | trim | upper | lower | default:x. " +
+          "A JSON body value that is exactly one template keeps its type. when examples: '{{steps.list.body.items | length}} > 0', '{{vars.token}} exists', '{{steps.a.text}} contains error'.",
+        parameters: {
+          type: "object",
+          properties: {
+            id: { type: "string", description: "Existing flow id to update." },
+            name: { type: "string" },
+            description: { type: "string" },
+            steps: { type: "array", items: { type: "object" } },
+            vars: { type: "object", description: "Initial variables, available as {{vars.name}}." },
+            every_minutes: { type: "integer", description: "Run on a schedule every N minutes (60 = hourly). Omit for manual only." },
+            schedule_enabled: { type: "boolean", description: "Set false to pause a schedule." }
+          },
+          additionalProperties: false
+        }
+      }
+    },
+    {
+      type: "function",
+      function: {
+        name: "run_flow",
+        description: "Run a saved flow now and get each step's status, extracted variables and output. Use it right after save_flow to verify.",
+        parameters: {
+          type: "object",
+          properties: { id: { type: "string" }, vars: { type: "object", description: "Override variables for this run." } },
+          required: ["id"],
+          additionalProperties: false
+        }
+      }
+    },
+    {
+      type: "function",
+      function: {
+        name: "list_flows",
+        description: "All saved flows with schedule and last-run status.",
+        parameters: { type: "object", properties: {}, additionalProperties: false }
+      }
+    },
+    {
+      type: "function",
+      function: {
+        name: "get_flow",
+        description: "One flow's full definition (secrets masked if masking is on) and its three most recent runs.",
+        parameters: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false }
+      }
+    },
+    {
+      type: "function",
+      function: {
+        name: "delete_flow",
+        description: "Delete a flow and its schedule. Always needs the user's approval.",
+        parameters: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false }
+      }
     }
   ];
 
@@ -1290,13 +1800,24 @@ window.__netscopeAiTools = (() => {
     get_request: toolGetRequest,
     describe_json: toolDescribeJson,
     get_websocket_frames: toolWebsocketFrames,
-    compare_requests: toolCompareRequests
+    compare_requests: toolCompareRequests,
+    http_request: toolHttpRequest,
+    get_curl: toolGetCurl,
+    save_flow: toolSaveFlow,
+    run_flow: toolRunFlow,
+    list_flows: toolListFlows,
+    get_flow: toolGetFlow,
+    delete_flow: toolDeleteFlow
   };
+
+  // Tools whose results come from the network, not the capture: their output
+  // does not count against the per-run capture budget.
+  const UNBUDGETED = new Set(["http_request", "save_flow", "run_flow", "list_flows", "get_flow", "delete_flow"]);
 
   // Never throws. Every failure becomes a tool result the model can react to,
   // because an exception here would abort the whole run.
   async function runTool(name, args, run) {
-    if (run && run.spent > TOTAL_BUDGET) {
+    if (run && run.spent > TOTAL_BUDGET && !UNBUDGETED.has(name)) {
       return JSON.stringify({ error: "tool budget exhausted for this run — answer with what you have" });
     }
     const fn = EXEC[name];
@@ -1313,13 +1834,16 @@ window.__netscopeAiTools = (() => {
       out = JSON.stringify({ error: String((err && err.message) || err).slice(0, 300) });
     }
     if (typeof out !== "string") out = JSON.stringify(out);
-    if (run) run.spent = (run.spent || 0) + out.length;
+    if (run && !UNBUDGETED.has(name)) run.spent = (run.spent || 0) + out.length;
     return out;
   }
 
   return {
     TOOLS,
     runTool,
+    approvalFor,
+    buildRequest,
+    isWriteMethod,
     attach,
     setRedaction,
     entryById,

@@ -22,123 +22,56 @@
 </head>
 <body>
 <h1>NetScope — Privacy Policy</h1>
-<p class="date"><strong>Last updated: July 26, 2026</strong></p>
-
+<p class="date"><strong>Last updated: November 18, 2026</strong></p>
 <h2>Summary</h2>
-<p>NetScope captures network traffic locally, in memory, on your own machine. It has no
-analytics, no telemetry, no error reporting, and no accounts, and it never contacts the
-developer.</p>
-<p>There is exactly one way data leaves your machine: the <strong>optional AI assistant</strong>,
-which is disabled until you supply your own API key and explicitly consent. When you use it,
-excerpts of the captured traffic are sent to Moonshot AI. That is described in full below.</p>
-
-<h2>What NetScope processes</h2>
-<p>While DevTools is open on a tab, the NetScope panel processes that tab's network traffic —
-HTTP requests and responses (URLs, headers, bodies) and WebSocket frames — for one purpose:
-displaying and searching it in the panel.</p>
-<p>Capture works two ways, both scoped to the tab you have DevTools open on:</p>
+<p>NetScope captures the API traffic of the pages you open it on and keeps it on your own machine. It has no analytics, no telemetry, no error reporting and no accounts, and it never contacts the developer.</p>
+<p>Data leaves your machine in exactly two ways, both started by you:</p>
+<ol>
+  <li><strong>Kimi (optional)</strong> — when you have entered your own Moonshot API key, consented, and ask a question, excerpts of the captured traffic are sent to Moonshot AI.</li>
+  <li><strong>Requests you send</strong> — when you, Kimi at your request, or a flow you saved sends an HTTP request, it goes to the URL that request names, like any request your browser makes.</li>
+</ol>
+<h2>What NetScope captures</h2>
+<p>On every page, a content script wraps the page's <code>fetch</code>, <code>XMLHttpRequest</code> and <code>WebSocket</code> at load and mirrors their activity to the extension: request method, URL, the headers the page set, request body, response status, headers and body (up to 256 KB each), and WebSocket frames. Native behavior is unchanged. Requests the browser makes on its own (documents, images, scripts) are not captured.</p>
+<p>Where it is kept:</p>
 <ul>
-  <li><strong>HTTP</strong> — <code>chrome.devtools.network</code>, the same API the Network
-  panel uses. Nothing is captured while DevTools is closed.</li>
-  <li><strong>WebSocket</strong> — a content script wraps <code>window.WebSocket</code> at page
-  load and mirrors frames to the panel. Native behavior is unchanged.</li>
+  <li><strong>Capture log</strong> — in the extension's IndexedDB on your machine, per tab. A new page load starts a fresh log unless you turn on <strong>Keep logs on reload</strong>. A tab's log is deleted when the tab closes, and the whole database is wiped each time the browser starts. Each tab keeps at most the last 3,000 entries.</li>
+  <li><strong>Chat</strong> — per tab in <code>chrome.storage.session</code>, which Chrome clears when the browser closes.</li>
+  <li><strong>Flows and their run history</strong> — in <code>chrome.storage.local</code> until you delete them. A flow built from a captured request stores that request's headers, which can include authorization tokens. Run history keeps step outputs (up to 4 KB each) for the last 15 runs.</li>
+  <li><strong>Settings and API key</strong> — in <code>chrome.storage.local</code> (below).</li>
 </ul>
-<p>This processing is local and in memory:</p>
+<p>Nothing is written outside your Chrome profile. No <code>chrome.debugger</code> is used.</p>
+<h2>Kimi (optional AI assistant)</h2>
+<p><strong>Off by default.</strong> Nothing is sent until you enter a Moonshot API key, tick the consent box and click "Save and enable". After that, when you ask a question or use a quick action, NetScope sends to <code>https://api.moonshot.ai/v1/chat/completions</code>:</p>
 <ul>
-  <li>Nothing is written to disk. Captured traffic is held in memory only while DevTools is
-  open, and discarded on navigation unless you enable “Preserve log”. A ring buffer keeps the
-  last 4,000 entries.</li>
-  <li>No <code>chrome.debugger</code> is used, so Chrome's “extension is debugging this
-  browser” bar never appears.</li>
-  <li>Data leaves the extension only when you ask: a Copy button places text on your clipboard,
-  the AsyncAPI export saves a file through your browser's normal download mechanism, and the AI
-  assistant sends data to Moonshot (below). All three are explicit actions you take.</li>
+  <li>your question and the conversation so far,</li>
+  <li>the parts of the captured traffic the model asks for through its tools — URLs, headers, request and response body fragments, WebSocket payloads,</li>
+  <li>the results of requests and flow runs it performs for you,</li>
+  <li>a short summary of the capture (counts, hosts, status codes).</li>
 </ul>
-
-<h2>The optional AI assistant</h2>
-<p><strong>Disabled by default.</strong> It does nothing — and sends nothing — until you enter a
-Moonshot (Kimi) API key, tick the consent checkbox, and click “Save &amp; enable”.</p>
-<p>Once enabled, when you ask a question or use a quick action, NetScope sends the following to
-<code>https://api.moonshot.ai/v1/chat/completions</code>:</p>
-<ul>
-  <li>your question,</li>
-  <li>excerpts of the captured traffic that the model requests through its tools — URLs,
-  headers, request and response body fragments, and WebSocket frame payloads from the page you
-  are inspecting,</li>
-  <li>a short summary of the capture (entry counts, hosts, status codes).</li>
-</ul>
-<p>This can include personal data, session tokens, cookies, and anything else the inspected page
-transfers. <strong>Only use the assistant on traffic you are permitted to share.</strong></p>
-<p>Requests are made with your API key and are governed by
-<a href="https://platform.moonshot.ai">Moonshot AI's privacy policy</a>. NetScope's developer
-receives nothing and has no visibility into these requests.</p>
-<p>Every tool call is shown in the transcript and can be expanded to reveal the exact data that
-was sent, so you can audit it.</p>
-
-<h3>Redaction</h3>
-<p>Redaction is <strong>off by default</strong>, meaning the assistant receives what the browser
-actually sent. Two optional settings reduce what is transmitted:</p>
-<ul>
-  <li><strong>Mask secrets before sending</strong> — replaces the values of
-  <code>Authorization</code>, <code>Cookie</code>, and common API-key headers with shape hints
-  (for example <code>&lt;redacted Bearer JWT, expired 3m ago&gt;</code>), and scrubs
-  token-shaped strings from bodies and URLs. Header and cookie <em>names</em> are preserved so
-  the assistant can still reason about auth.</li>
-  <li><strong>Also mask emails, card and SSN patterns</strong> — additionally scrubs those from
-  bodies.</li>
-</ul>
-<p>Masking is best-effort pattern matching. It cannot catch a secret sitting in an arbitrary
-JSON field, and it is not a substitute for judgement about what traffic you expose.</p>
-
+<p>AI steps inside a flow send their prompt — including any values the prompt pulls in from earlier steps — to the same endpoint, each time the flow runs, on schedule or not.</p>
+<p>This can include personal data, session tokens, cookies and anything else the page transfers. <strong>Only use Kimi on traffic you are permitted to share.</strong> Requests use your key and are governed by Moonshot AI's privacy policy. NetScope's developer receives nothing.</p>
+<p>Every tool call appears in the chat and expands to the exact data that was sent.</p>
+<h3>Masking</h3>
+<p>Off by default. <strong>Mask secrets before sending</strong> replaces the values of <code>Authorization</code>, <code>Cookie</code> and common API-key headers with shape hints (for example <code>&lt;redacted Bearer JWT, expired 3m ago&gt;</code>) and scrubs token-shaped strings from bodies and URLs. <strong>Also mask emails, card and SSN patterns</strong> scrubs those too. Masking is best-effort pattern matching and cannot catch a secret in an arbitrary JSON field. Masked values are never sent by Kimi's requests: to replay a request with real credentials it references the captured entry, and NetScope copies the values locally without showing them to the model.</p>
 <h3>Your API key</h3>
-<p>Stored with <code>chrome.storage.local</code>, on this machine only. It is deliberately
-<strong>not</strong> stored in <code>chrome.storage.sync</code>, which would replicate it through
-your Google account. It is never sent anywhere except as the <code>Authorization</code> header on
-requests to <code>api.moonshot.ai</code>, and it is never included in exports, cURL commands, or
-copied text.</p>
-<p><code>chrome.storage.local</code> is not encrypted — it is plain JSON inside your Chrome
-profile directory, readable by anything with access to that directory. Prefer a key with a spend
-cap, and use <strong>Forget key</strong> to remove it.</p>
-<p>Chat transcripts are not persisted and are gone when the DevTools session ends.</p>
-
+<p>Stored with <code>chrome.storage.local</code> on this machine only — never <code>chrome.storage.sync</code>. It is sent only as the <code>Authorization</code> header to <code>api.moonshot.ai</code> (including the free <code>GET /v1/models</code> call behind "Test key"). It is never included in exports, cURL commands or copied text. <code>chrome.storage.local</code> is not encrypted; prefer a key with a spend cap, and use <strong>Forget key</strong> to remove it.</p>
+<h2>Requests and flows</h2>
+<p>When you click <strong>Send</strong> in Edit &amp; send, approve a request Kimi proposes, or run a flow, the background worker sends that request to its URL with the browser's own cookies for that site, and records it in the tab's capture log. Scheduled flows run with <code>chrome.alarms</code> while Chrome is open, without further interaction, until you change their schedule to "Manual only" or delete them. By default, Kimi must get your click before sending a request that can change data (POST, PUT, PATCH, DELETE), saving a scheduled flow, or deleting a flow; you can make this stricter or turn it off in Settings.</p>
 <h2>Permissions</h2>
 <ul>
-  <li><strong>clipboardWrite</strong> — used only when you click a Copy button (copy as cURL,
-  copy a frame payload, copy the AsyncAPI document, copy a reply).</li>
-  <li><strong>storage</strong> — stores the AI assistant's API key and settings locally. Nothing
-  else is stored.</li>
-  <li><strong>host permission for <code>https://api.moonshot.ai/*</code></strong> — the AI
-  assistant's only outbound destination. This is the only host NetScope can contact; it is
-  unused unless you enable the assistant.</li>
-  <li><strong>Content scripts on <code>&lt;all_urls&gt;</code></strong> — the WebSocket hook must
-  be in place at page load, on whichever page you choose to debug, to see frames at all. It only
-  mirrors WebSocket activity to the panel; it reads no page content and modifies no page
-  behavior. You can narrow the <code>matches</code> patterns in <code>manifest.json</code> if you
-  only debug specific hosts.</li>
+  <li><strong>Content scripts and host permission on <code>&lt;all_urls&gt;</code></strong> — the capture hook must be in place on whichever page you choose to debug, and requests and flows must reach whichever API you point them at. Narrow the patterns in <code>manifest.json</code> to limit this.</li>
+  <li><strong>storage</strong> — settings, API key, flows and run history (local); chat per tab (session).</li>
+  <li><strong>alarms</strong> — flow schedules.</li>
+  <li><strong>scripting</strong> — injects the capture hook into tabs that were already open when you first click the icon.</li>
+  <li><strong>clipboardWrite</strong> — the Copy buttons.</li>
 </ul>
-<p>NetScope uses no <code>chrome.debugger</code>, no <code>tabs</code>, and no
-<code>sidePanel</code> permission.</p>
-
 <h2>Data collection</h2>
-<p>NetScope collects no personal information, no browsing history, no usage statistics, and no
-identifiers. There are no accounts, no cookies set by the extension, and no remote code — all
-code ships in the package, and responses from the Moonshot API are rendered as text, never
-executed.</p>
-
+<p>NetScope collects no personal information, browsing history, usage statistics or identifiers for its developer. There is no remote code: all code ships in the package, and responses from Moonshot and from APIs you call are rendered as text, never executed.</p>
 <h2>Limited Use</h2>
-<p>NetScope's handling of user data complies with the Chrome Web Store User Data Policy,
-including its Limited Use requirements. Captured traffic is transferred to Moonshot AI only when
-you have enabled the AI assistant and only to provide the assistant feature you invoked. It is
-not sold, not shared with anyone else, and not used for advertising, creditworthiness, or any
-purpose beyond answering your question.</p>
-
+<p>NetScope's handling of user data complies with the Chrome Web Store User Data Policy, including its Limited Use requirements. Captured traffic is transferred to Moonshot AI only when you have enabled Kimi, and only to provide the feature you invoked. It is not sold, not shared with anyone else, and not used for advertising, creditworthiness or any other purpose.</p>
 <h2>Changes</h2>
-<p>If this policy ever changes, the updated version will be published at this same URL with a
-new “Last updated” date. Any change would still have to describe truthfully what the published
-code does.</p>
-
+<p>Updates to this policy are published at this URL with a new "Last updated" date, and must describe truthfully what the published code does.</p>
 <h2>Contact</h2>
-<p>Questions about this policy or the extension:</p>
 <ul>
   <li>Email: [YOUR EMAIL]</li>
   <li>Source code: <a href="https://github.com/taishi55/NetScope">github.com/taishi55/NetScope</a></li>
