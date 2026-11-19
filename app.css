@@ -565,18 +565,94 @@ body.standalone #aiLog > * {
   margin: 0 0 8px;
 }
 
-.msg-assistant .msg-body h5 {
-  font-size: 13px;
-  margin: 12px 0 4px;
+/* Markdown (markdown.js): Kimi's answers and the Docs tab */
+.msg-assistant .msg-body .md-h {
+  margin: 14px 0 4px;
+  line-height: 1.3;
+  font-weight: 650;
 }
 
-.msg-assistant .msg-body ul {
+.msg-assistant .msg-body .md-h1 {
+  font-size: 15.5px;
+}
+
+.msg-assistant .msg-body .md-h2 {
+  font-size: 14px;
+}
+
+.msg-assistant .msg-body .md-h3 {
+  font-size: 13px;
+}
+
+.msg-assistant .msg-body .md-h4,
+.msg-assistant .msg-body .md-h5,
+.msg-assistant .msg-body .md-h6 {
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+
+.msg-assistant .msg-body ul,
+.msg-assistant .msg-body ol {
   margin: 0 0 8px;
-  padding-left: 18px;
+  padding-left: 20px;
 }
 
 .msg-assistant .msg-body li {
   margin: 2px 0;
+}
+
+.msg-assistant .msg-body li > ul,
+.msg-assistant .msg-body li > ol {
+  margin: 2px 0 0;
+}
+
+.msg-assistant .msg-body li > p {
+  margin: 0 0 4px;
+}
+
+.msg-assistant .msg-body ol > li::marker {
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.msg-assistant .msg-body li.md-task {
+  list-style: none;
+  margin-left: -18px;
+}
+
+.msg-assistant .msg-body li.md-task > input {
+  margin: 0 6px 0 0;
+  vertical-align: -2px;
+  accent-color: var(--ok);
+}
+
+.msg-assistant .msg-body blockquote {
+  margin: 0 0 8px;
+  padding: 2px 0 2px 10px;
+  border-left: 3px solid var(--line);
+  color: var(--ink-2);
+}
+
+.msg-assistant .msg-body blockquote > :last-child {
+  margin-bottom: 0;
+}
+
+.msg-assistant .msg-body hr {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: 12px 0;
+}
+
+.msg-assistant .msg-body del {
+  color: var(--ink-3);
+}
+
+.msg-assistant .msg-body a.md-link {
+  color: var(--redirect);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+  overflow-wrap: anywhere;
 }
 
 .msg-assistant .msg-body code {
@@ -590,14 +666,115 @@ body.standalone #aiLog > * {
   white-space: pre-wrap;
 }
 
-.msg-assistant .msg-body pre {
-  background: var(--surface);
+.msg-assistant .msg-body > pre {
+  margin: 0 0 8px;
+  padding: 8px 10px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 8px 10px;
+  background: var(--surface);
+  overflow-x: auto;
+}
+
+.msg-assistant .msg-body .md-code {
   margin: 0 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.msg-assistant .msg-body .md-code-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 3px 2px 10px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--line);
+}
+
+.msg-assistant .msg-body .md-lang {
+  font: 11px var(--mono);
+  color: var(--ink-3);
+}
+
+.msg-assistant .msg-body .md-code pre {
+  margin: 0;
+  padding: 8px 10px;
   overflow-x: auto;
   white-space: pre;
+}
+
+.msg-assistant .msg-body .md-code pre code {
+  background: none;
+  padding: 0;
+}
+
+.msg-assistant .msg-body .md-copy {
+  font-size: 11.5px;
+  padding: 1px 8px;
+  color: var(--ink-2);
+  border-color: transparent;
+  background: transparent;
+}
+
+.msg-assistant .msg-body .md-copy:hover {
+  color: var(--ink);
+  background: var(--surface-3);
+}
+
+.msg-assistant .msg-body .md-table {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  margin: 0 0 8px;
+}
+
+.msg-assistant .msg-body .md-table-scroll {
+  align-self: stretch;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.msg-assistant .msg-body table {
+  border-collapse: collapse;
+  min-width: 100%;
+  font-size: 12px;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+}
+
+.msg-assistant .msg-body th,
+.msg-assistant .msg-body td {
+  padding: 5px 9px;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--line);
+}
+
+.msg-assistant .msg-body th + th,
+.msg-assistant .msg-body td + td {
+  border-left: 1px solid var(--line);
+}
+
+.msg-assistant .msg-body th {
+  background: var(--surface-2);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.msg-assistant .msg-body tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.msg-assistant .msg-body tbody tr:hover td {
+  background: var(--signal-soft);
+}
+
+.msg-assistant .msg-body td code {
+  overflow-wrap: anywhere;
 }
 
 .msg-tools {

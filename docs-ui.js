@@ -168,7 +168,7 @@ window.__netscopeDocsUi = (() => {
     const ta = node("textarea");
     ta.value = editing.content || "";
     ta.spellcheck = true;
-    ta.placeholder = "# Heading\n\n- Markdown: headings, - bullets, `code`, ``` fences";
+    ta.placeholder = "# Heading\n\n- Markdown: headings, - bullets, 1. steps, tables, `code`, ``` fences, [links](https://…)";
     ta.setAttribute("aria-label", "Doc content (Markdown)");
     const actions = node("div", "actions");
     actions.appendChild(

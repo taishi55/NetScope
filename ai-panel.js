@@ -360,70 +360,20 @@ window.__netscopeAi = (() => {
     }
   }
 
-  function appendBold(parent, text) {
-    for (const part of text.split(/(\*\*[^*]+\*\*)/g)) {
-      if (/^\*\*[^*]+\*\*$/.test(part)) {
-        const b = document.createElement("strong");
-        appendRefs(b, part.slice(2, -2));
-        parent.appendChild(b);
-      } else if (part) appendRefs(parent, part);
-    }
-  }
-
-  function inline(parent, text) {
-    for (const part of text.split(/(`[^`]+`)/g)) {
-      if (/^`[^`]+`$/.test(part)) parent.appendChild(node("code", "", part.slice(1, -1)));
-      else if (part) appendBold(parent, part);
-    }
-  }
-
-  const isBullet = (s) => /^\s*([-*•]|\d+[.)])\s+/.test(s);
-  const isFence = (s) => /^\s*```/.test(s);
-  const isHeading = (s) => /^\s*#{1,6}\s+/.test(s);
-
+  // Markdown → DOM lives in markdown.js (tables, nested lists, quotes, code
+  // with Copy, safe links). Plain text runs through appendRefs so "#412"
+  // links to that request in Traffic.
   function renderRich(container, text) {
-    container.replaceChildren();
     container.classList.remove("streaming");
-    const lines = String(text || "").split(/\r?\n/);
-    let i = 0;
-    while (i < lines.length) {
-      const line = lines[i];
-      if (isFence(line)) {
-        const buf = [];
-        i++;
-        while (i < lines.length && !isFence(lines[i])) buf.push(lines[i++]);
-        i++;
-        container.appendChild(node("pre", "", buf.join("\n")));
-        continue;
-      }
-      if (isHeading(line)) {
-        const h = node("h5");
-        inline(h, line.replace(/^\s*#{1,6}\s+/, ""));
-        container.appendChild(h);
-        i++;
-        continue;
-      }
-      if (isBullet(line)) {
-        const ul = node("ul");
-        while (i < lines.length && isBullet(lines[i])) {
-          const li = node("li");
-          inline(li, lines[i].replace(/^\s*([-*•]|\d+[.)])\s+/, ""));
-          ul.appendChild(li);
-          i++;
-        }
-        container.appendChild(ul);
-        continue;
-      }
-      if (!line.trim()) {
-        i++;
-        continue;
-      }
-      const buf = [];
-      while (i < lines.length && lines[i].trim() && !isFence(lines[i]) && !isBullet(lines[i]) && !isHeading(lines[i])) buf.push(lines[i++]);
-      const p = node("p");
-      inline(p, buf.join(" "));
-      container.appendChild(p);
+    const md = globalThis.__netscopeMarkdown;
+    if (!md) {
+      container.replaceChildren(node("p", "", String(text || "")));
+      return;
     }
+    md.render(container, text, {
+      leaf: appendRefs,
+      copy: (t, msg) => typeof copyText === "function" && copyText(t, msg)
+    });
   }
 
   /* ------------------------------------------------------- transcript */

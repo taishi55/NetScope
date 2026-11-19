@@ -137,7 +137,10 @@ window.__netscopeAiAgent = (() => {
       "",
       "Answering:",
       "- Concise and technical; the reader is a developer.",
-      "- Short sections and \"- \" bullets. No tables, no emojis. ``` fences for code, JSON and cURL.",
+      "- Markdown renders: ## headings, \"- \" bullets, 1. numbered steps, **bold**, `code`, [links](https://...),",
+      "  > quotes and ``` fences with a language (json, bash for cURL, js). No emojis.",
+      "- Use a table when comparing several items on the same fields (endpoints, params, status per run);",
+      "  keep it to about 6 columns and short cells. Bullets for everything else.",
       "- When diagnosing: what you observed (with ids), the most likely cause, then the next concrete check."
     ].join("\n");
   }
