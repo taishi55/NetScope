@@ -1268,25 +1268,53 @@ window.__netscopeAiTools = (() => {
 
   /* --------------------------------------------------------------- flows */
 
+  const CHILD_KEYS = ["steps", "then", "else"]; // for_each / repeat bodies, if branches
+  const CURL_WRITE = /(-X|--request)\s+['"]?(POST|PUT|PATCH|DELETE)|--data|-d\s|--json/i;
+
+  function eachStep(steps, fn) {
+    for (const s of steps || []) {
+      if (!s || typeof s !== "object") continue;
+      fn(s);
+      for (const k of CHILD_KEYS) if (Array.isArray(s[k])) eachStep(s[k], fn);
+    }
+  }
+
+  const isHttpStep = (s) => s.type === "http" || (!s.type && (s.url || s.curl || s.from_id != null));
+
+  // Could running these steps change data somewhere? A sub-flow might, so it counts.
+  function flowHasWrites(steps) {
+    let writes = false;
+    eachStep(steps, (s) => {
+      if (isHttpStep(s) && (isWriteMethod(s.method) || (s.curl && CURL_WRITE.test(s.curl)))) writes = true;
+      if (s.type === "run_flow" || (!s.type && s.flow)) writes = true;
+    });
+    return writes;
+  }
+
   function redactStep(st) {
     const s = JSON.parse(JSON.stringify(st));
-    if (s.headers) {
-      const red = redactHeaders(headerListFrom(s.headers));
-      s.headers = red;
-    }
+    if (s.headers) s.headers = redactHeaders(headerListFrom(s.headers));
     if (typeof s.curl === "string") s.curl = scrubText(s.curl);
     if (typeof s.url === "string") s.url = clipUrl(s.url, 1000);
     if (typeof s.body === "string") s.body = scrubText(s.body);
+    for (const k of CHILD_KEYS) if (Array.isArray(s[k])) s[k] = s[k].map(redactStep);
     return s;
   }
 
   function flowBrief(f) {
+    let total = 0;
+    eachStep(f.steps, () => total++);
+    const t = f.on_request;
     return {
       id: f.id,
       name: f.name,
       description: f.description || "",
-      steps: (f.steps || []).length,
+      steps: total,
       schedule: f.schedule && f.schedule.enabled ? `every ${f.schedule.every_minutes} min` : "manual only",
+      on_request:
+        t && t.enabled
+          ? `when ${t.host ? "a page on " + t.host : "a page on any site"} sends ${t.method || "any method"} ${t.url_contains ? "to URLs containing " + t.url_contains : "requests"}${t.status ? " answered " + t.status : ""} (cooldown ${t.cooldown_seconds} s)`
+          : undefined,
       last_run: f.lastRun
         ? { at: new Date(f.lastRun.at).toISOString(), ok: f.lastRun.ok, ms: f.lastRun.ms, error: f.lastRun.error || undefined, trigger: f.lastRun.trigger }
         : null
@@ -1298,8 +1326,9 @@ window.__netscopeAiTools = (() => {
   function materializeSteps(steps) {
     return (steps || []).map((st, i) => {
       const s = Object.assign({}, st);
-      if (!s.type) s.type = s.prompt ? "ai" : s.ms != null ? "delay" : "http";
-      if (s.type === "http" && s.from_id != null) {
+      for (const k of CHILD_KEYS) if (Array.isArray(s[k])) s[k] = materializeSteps(s[k]);
+      if (isHttpStep(s) && s.from_id != null) {
+        s.type = "http";
         const e = entryById(Number(s.from_id));
         if (!e || e.kind !== "http") throw new Error(`step ${s.id || i + 1}: no captured HTTP request with id ${s.from_id}`);
         const headers = {};
@@ -1312,8 +1341,8 @@ window.__netscopeAiTools = (() => {
         s.source_entry = e.id;
         delete s.from_id;
       }
-      if (s.type === "http") {
-        const m = MASKED.exec(JSON.stringify([s.url, s.headers, s.body, s.curl]));
+      if (isHttpStep(s)) {
+        const m = MASKED.exec(JSON.stringify([s.url, s.headers, s.body, s.curl, s.query]));
         if (m) throw new Error(`step ${s.id || i + 1} contains a masked placeholder (${m[0]}); use from_id so NetScope copies the real captured values`);
       }
       return s;
@@ -1342,6 +1371,18 @@ window.__netscopeAiTools = (() => {
       vars: a.vars || (existing && existing.vars) || {},
       schedule
     };
+    // on_request: object sets the trigger, null removes it, omitted keeps it.
+    const trig = a.on_request !== undefined ? a.on_request : existing && existing.on_request;
+    if (trig) {
+      flow.on_request = Object.assign({ enabled: true }, trig);
+      // Scope a new trigger to the site it was built on, so a bot for one app
+      // never fires (and forwards data) while browsing another.
+      if (!flow.on_request.host && a.on_request) {
+        try {
+          flow.on_request.host = new URL(api.page().url).host;
+        } catch (_) {}
+      }
+    }
     if (a.id) flow.id = a.id;
     return flow;
   }
@@ -1382,10 +1423,14 @@ window.__netscopeAiTools = (() => {
       trigger: run.trigger,
       at: new Date(run.startedAt).toISOString(),
       ms: run.ms,
+      note: run.note || undefined,
+      step_runs: run.executed,
       steps: (run.steps || []).map((s) => ({
         id: s.id,
         type: s.type,
         ok: s.ok,
+        runs: s.runs > 1 ? s.runs : undefined,
+        failed_runs: s.runs > 1 && s.failCount ? s.failCount : undefined,
         skipped: s.skipped || undefined,
         status: s.status,
         method: s.method,
@@ -1397,7 +1442,9 @@ window.__netscopeAiTools = (() => {
         extracted: s.extracted ? JSON.parse(scrubText(JSON.stringify(s.extracted))) : undefined,
         output: s.output ? scrubText(String(s.output).slice(0, 1500)) : undefined
       })),
-      vars: run.vars ? JSON.parse(scrubText(JSON.stringify(run.vars))) : undefined
+      vars: run.vars ? JSON.parse(scrubText(JSON.stringify(run.vars))) : undefined,
+      memory: run.state && Object.keys(run.state).length ? JSON.parse(scrubText(JSON.stringify(run.state))) : undefined,
+      log: run.logs && run.logs.length ? run.logs.slice(-30).map((l) => scrubText(l.message)) : undefined
     };
   }
 
@@ -1406,9 +1453,11 @@ window.__netscopeAiTools = (() => {
       const f = await api.rpc("flows.get", { id: (args || {}).id });
       if (!f) return JSON.stringify({ error: `no flow with id ${(args || {}).id}` });
       const runs = await api.rpc("flows.runs", { id: f.id });
+      const memory = await api.rpc("flows.state", { id: f.id }).catch(() => ({}));
       return capResult(
         Object.assign(flowBrief(f), {
           vars: f.vars || {},
+          memory: JSON.parse(scrubText(JSON.stringify(memory || {}))),
           steps: (f.steps || []).map(redactStep),
           recent_runs: runs.slice(0, 3).map(runBrief)
         }),
@@ -1494,11 +1543,18 @@ window.__netscopeAiTools = (() => {
       } catch (_) {
         return null; // the tool will return the error itself
       }
-      const writes = (flow.steps || []).some((s) => s.type === "http" && (isWriteMethod(s.method) || (s.curl && /(-X|--request)\s+['"]?(POST|PUT|PATCH|DELETE)|--data|-d\s|--json/i.test(s.curl))));
-      if (policy === "writes" && !flow.schedule.enabled && !writes) return null;
+      // Anything that will run without a click — a schedule, a page-request
+      // trigger — or that can change data needs approval to be saved.
+      const auto = flow.schedule.enabled || !!(flow.on_request && flow.on_request.enabled !== false);
+      if (policy === "writes" && !auto && !flowHasWrites(flow.steps)) return null;
+      const t = flow.on_request && flow.on_request.enabled !== false ? flow.on_request : null;
       return {
         kind: "flow",
-        title: flow.schedule.enabled ? `Kimi wants to save a flow that runs every ${flow.schedule.every_minutes} min` : "Kimi wants to save a flow",
+        title: t
+          ? `Kimi wants to save a flow that runs by itself when the page calls ${t.url_contains || t.method || "matching URLs"}`
+          : flow.schedule.enabled
+            ? `Kimi wants to save a flow that runs every ${flow.schedule.every_minutes} min`
+            : "Kimi wants to save a flow",
         flow
       };
     }
@@ -1508,8 +1564,7 @@ window.__netscopeAiTools = (() => {
         f = await api.rpc("flows.get", { id: a.id });
       } catch (_) {}
       if (!f) return null;
-      const writes = (f.steps || []).some((s) => s.type === "http" && (isWriteMethod(s.method) || (s.curl && /(-X|--request)\s+['"]?(POST|PUT|PATCH|DELETE)|--data|-d\s|--json/i.test(s.curl))));
-      if (policy === "writes" && !writes) return null;
+      if (policy === "writes" && !flowHasWrites(f.steps)) return null;
       return { kind: "flow-run", title: `Kimi wants to run the flow “${f.name}”`, flow: f };
     }
     if (name === "delete_flow") {
@@ -1733,11 +1788,18 @@ window.__netscopeAiTools = (() => {
       function: {
         name: "save_flow",
         description:
-          "Create or update a flow: an ordered chain of steps that can run on demand or on a schedule (every N minutes, in the background, even with the page closed). Pass `id` to update; omit `steps` when only renaming or rescheduling. " +
-          "Step types: http {id, method, url, headers, body, query} or {id, curl} or {id, from_id} (copies a captured request's real headers locally); ai {id, prompt} (Kimi processes data from earlier steps); delay {id, ms}. " +
-          "Any step may have: extract {var: 'body.data.token'} (paths into that step's response: status, headers.<lowercase>, body.<path>, text), when '<expr>', expect_status '2xx' or '200,201', continue_on_error. " +
-          "Templates in url/headers/body/prompt/when: {{vars.name}}, {{steps.<id>.status}}, {{steps.<id>.body.items[0].id}}, {{steps.<id>.headers.etag}}, {{now}}, {{now_iso}}, {{today}}, {{uuid}}; filters | json | urlencode | first | last | length | trim | upper | lower | default:x. " +
-          "A JSON body value that is exactly one template keeps its type. when examples: '{{steps.list.body.items | length}} > 0', '{{vars.token}} exists', '{{steps.a.text}} contains error'.",
+          "Create or update a flow: an automation from a simple chain of requests up to a bot with filters, loops, branches and memory. Runs on demand, on a schedule (every_minutes, in the background even with the page closed), and/or when the page makes a matching request (on_request). Pass `id` to update; omitted fields keep their current value. " +
+          "STEPS (each has a unique id across the whole flow; any step may add when '<condition>' to skip itself and continue_on_error: true): " +
+          "http {method, url, headers, body, query} | {curl} | {from_id} (copies a captured request's real headers locally), plus extract {var: 'body.data.token'} (paths into that step's response: status, headers.<lowercase>, body.<path>, text), expect_status '2xx' or '200,201', retry {times, delay_ms} (on network errors, 429, 5xx), timeout_ms; " +
+          "ai {prompt, json: true for JSON output}; delay {ms}; set {vars: {name: value}, state: {name: value}} (state = memory kept between runs, e.g. the last id already handled); " +
+          "filter {items, where, as='item', limit, save_as} keeps items where the condition holds, into vars.<save_as or id>; map {items, value, as, save_as} builds a new list; " +
+          "for_each {items, as='item', steps: [...], max=100 (cap 1000), delay_ms, on_item_error 'stop'|'continue', collect {save_as, value}} runs steps per item; " +
+          "repeat {steps: [...], until '<cond>' (checked after each pass) or while '<cond>' (before), max=10 (cap 500), delay_ms} for pagination and polling; " +
+          "if {condition, then: [...], else: [...]}; stop {outcome 'ok'|'fail', message} ends the run; log {message} writes to the run log; run_flow {flow: '<flow id>', vars} runs another flow and exposes its vars as steps.<id>.body. " +
+          "TEMPLATES in any string: {{vars.x}}, {{state.x}}, {{steps.<id>.status|body.<path>|headers.<name>|text}} (latest run of that step), {{item.x}} or the loop's `as` name, {{loop.index|number|count|first|last}}, {{trigger.body.<path>|url|method|status|headers.<name>|request_body}} (on_request runs), {{now}}, {{now_iso}}, {{today}}, {{uuid}}. " +
+          "FILTERS: json, json_parse, urlencode, first, last, length/count, trim, upper, lower, default:x, number, string, not, round:n, abs, add:n, sub:n, mul:n, div:n, keys, values, get:path, pluck:field, where:field=value (also != > < >= <= ~), sort:field (sort:-field = descending), reverse, unique[:field], sum[:field], min[:field], max[:field], slice:a:b, join:\", \", split:x, replace:a:b, contains:x, date, timestamp. Quote an argument to keep spaces. A JSON value that is exactly one template keeps its type. " +
+          "CONDITIONS: A == B, !=, >, <, >=, <=, contains, !contains, matches <regex>, exists, missing; combine with and / or; prefix not. " +
+          "LIMITS per run: 2000 step executions, 4 minutes. Prefer filter + for_each over many hand-written steps; use state to avoid acting on the same item twice.",
         parameters: {
           type: "object",
           properties: {
@@ -1747,7 +1809,12 @@ window.__netscopeAiTools = (() => {
             steps: { type: "array", items: { type: "object" } },
             vars: { type: "object", description: "Initial variables, available as {{vars.name}}." },
             every_minutes: { type: "integer", description: "Run on a schedule every N minutes (60 = hourly). Omit for manual only." },
-            schedule_enabled: { type: "boolean", description: "Set false to pause a schedule." }
+            schedule_enabled: { type: "boolean", description: "Set false to pause a schedule." },
+            on_request: {
+              type: ["object", "null"],
+              description:
+                "Run automatically when the page itself makes a matching request: {url_contains, method, status ('2xx'), host (defaults to the current page's site; matches subdomains too), cooldown_seconds (default 30, min 5), enabled}. The response is available as {{trigger.body…}}. null removes the trigger."
+            }
           },
           additionalProperties: false
         }

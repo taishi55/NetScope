@@ -42,7 +42,8 @@ chrome.storage.onChanged.addListener((changes, area) => {
     prefs = Object.assign({ preserve: false }, changes[PREFS_KEY].newValue || {});
     broadcastAll({ type: "prefs", prefs });
   }
-  if (changes["netscope.flows"] || changes["netscope.flowRuns"] || changes[ALERT_KEY]) {
+  if (changes["netscope.flows"]) triggerFlows = null; // re-read on the next page request
+  if (changes["netscope.flows"] || changes["netscope.flowRuns"] || changes[ALERT_KEY] || changes["netscope.flowState"]) {
     broadcastAll({ type: "flows-changed" });
   }
 });
@@ -221,6 +222,7 @@ function handleEvent(tabId, frameId, ev) {
           patch.durationMs = Math.max(0, Number(ev.durationMs) || e.durationMs || 0);
           t.hooks.delete(key);
         }
+        const finished = !!ev.done; // a request is offered to triggers once, when its body is complete
         if (ev.opaque) patch.note = "opaque (no-cors) response — the page cannot read it either";
         if (ev.failed) {
           patch.failed = true;
@@ -228,6 +230,7 @@ function handleEvent(tabId, frameId, ev) {
         } else if (ev.error) patch.error = String(ev.error);
         Store.update(t, e, patch);
         broadcast(tabId, { type: "update", entry: e });
+        if (finished) maybeTrigger(tabId, e);
         return null;
       }
       case "ws-open":
@@ -445,6 +448,59 @@ async function runHttp(input, opts) {
 
 const running = new Set();
 
+// An MV3 worker is stopped after ~30 s without extension API calls; a long
+// flow (pagination, delays, loops) must not be cut off midway.
+let keepAlive = 0;
+function holdWorker(on) {
+  if (on && !keepAlive) keepAlive = setInterval(() => chrome.runtime.getPlatformInfo().catch(() => {}), 20000);
+  if (!on && keepAlive && !running.size) {
+    clearInterval(keepAlive);
+    keepAlive = 0;
+  }
+}
+
+/* ------------------------------------------------- page-request triggers */
+
+let triggerFlows = null; // flows with on_request, cached until flows change
+const lastTriggered = new Map(); // flow id -> ms
+
+async function maybeTrigger(tabId, e) {
+  if (e.source && e.source !== "page") return; // never react to our own requests
+  if (!triggerFlows) {
+    triggerFlows = (await Flows.list()).filter((f) => f.on_request && f.on_request.enabled);
+  }
+  if (!triggerFlows.length) return;
+  for (const f of triggerFlows) {
+    if (!Flows.matchesRequest(f.on_request, e)) continue;
+    const now = Date.now();
+    if (running.has(f.id) || now - (lastTriggered.get(f.id) || 0) < f.on_request.cooldown_seconds * 1000) continue;
+    lastTriggered.set(f.id, now);
+    const headers = {};
+    for (const h of e.resHeaders || []) headers[String(h.name).toLowerCase()] = h.value;
+    const reqHeaders = {};
+    for (const h of e.reqHeaders || []) reqHeaders[String(h.name).toLowerCase()] = h.value;
+    const parse = (t) => {
+      try {
+        return JSON.parse(t);
+      } catch (_) {
+        return t || "";
+      }
+    };
+    const data = {
+      entry_id: e.id,
+      url: e.url,
+      method: e.method,
+      status: e.status,
+      headers,
+      body: parse(e.resBody),
+      request_headers: reqHeaders,
+      request_body: parse(e.reqBody),
+      tab_id: tabId
+    };
+    runFlow(f.id, { trigger: "request", tabId, trigger_data: data }).catch(() => {});
+  }
+}
+
 async function aiForFlows(prompt) {
   const s = await AI.loadSettings();
   if (!AI.isReady(s)) throw new Error("AI steps need the Kimi API key set up in NetScope settings");
@@ -468,9 +524,11 @@ async function runFlow(id, opts) {
   const o = opts || {};
   if (running.has(id)) throw new Error("this flow is already running");
   running.add(id);
+  holdWorker(true);
   try {
     const run = await Flows.run(id, {
       trigger: o.trigger || "manual",
+      trigger_data: o.trigger_data,
       vars: o.vars,
       http: (req, step) => runHttp(req, { tabId: o.tabId, source: "flow", timeoutMs: step && step.timeout_ms }),
       ai: aiForFlows,
@@ -478,14 +536,15 @@ async function runFlow(id, opts) {
         if (Number.isInteger(o.tabId)) broadcast(o.tabId, { type: "flow-step", flowId: id, step: sr });
       }
     });
-    if (!run.ok && run.trigger === "schedule") {
-      await chrome.storage.local.set({ [ALERT_KEY]: { flowId: id, flowName: run.flowName, at: run.startedAt, error: run.error } });
+    if (!run.ok && (run.trigger === "schedule" || run.trigger === "request")) {
+      await chrome.storage.local.set({ [ALERT_KEY]: { flowId: id, flowName: run.flowName, at: run.startedAt, error: run.error, trigger: run.trigger } });
       chrome.action.setBadgeBackgroundColor({ color: "#D64545" }).catch(() => {});
       chrome.action.setBadgeText({ text: "!" }).catch(() => {});
     }
     return run;
   } finally {
     running.delete(id);
+    holdWorker(false);
   }
 }
 
@@ -528,6 +587,11 @@ async function handleRpc(tabId, method, p) {
       return Flows.remove(p.id);
     case "flows.runs":
       return Flows.runs(p.id);
+    case "flows.state":
+      return Flows.getState(p.id);
+    case "flows.resetState":
+      await Flows.setState(p.id, null);
+      return true;
     case "flows.run":
       return runFlow(p.id, { tabId, vars: p.vars, trigger: p.trigger || "manual" });
     case "flows.alert": {

@@ -30,7 +30,7 @@ Where it is kept:
   the tab closes, and the whole database is wiped each time the browser starts. Each tab keeps
   at most the last 3,000 entries.
 - **Chat** — per tab in `chrome.storage.session`, which Chrome clears when the browser closes.
-- **Flows and their run history** — in `chrome.storage.local` until you delete them. A flow
+- **Flows, their memory and run history** — in `chrome.storage.local` until you delete them. A flow
   built from a captured request stores that request's headers, which can include
   authorization tokens. Run history keeps step outputs (up to 4 KB each) for the last 15 runs.
 - **Settings and API key** — in `chrome.storage.local` (below).
@@ -82,8 +82,13 @@ When you click **Send** in Edit & send, approve a request Kimi proposes, or run 
 background worker sends that request to its URL with the browser's own cookies for that site,
 and records it in the tab's capture log. Scheduled flows run with `chrome.alarms` while Chrome
 is open, without further interaction, until you change their schedule to "Manual only" or
-delete them. By default, Kimi must get your click before sending a request that can change
-data (POST, PUT, PATCH, DELETE), saving a scheduled flow, or deleting a flow; you can make
+delete them. A flow with a **page-request trigger** reads the matching captured response
+(status, headers, body) of the page you are on and runs, at most once per its cooldown, until
+you pause or delete it; requests NetScope itself sends never trigger flows. A flow's
+**memory** (values it saves with `set` → `state`) is kept in `chrome.storage.local` until you
+clear it from the flow card or delete the flow. By default, Kimi must get your click before sending a request that can change
+data (POST, PUT, PATCH, DELETE), saving a flow that runs by itself (schedule or page-request
+trigger) or can change data, or deleting a flow; you can make
 this stricter or turn it off in Settings.
 
 ## Permissions

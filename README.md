@@ -15,9 +15,9 @@ needed.
 - **Call APIs like Postman** — paste a cURL into the chat, or ask Kimi to replay a captured
   request with changes. Requests run from the extension (no CORS), are logged in Traffic
   tagged *AI*, *You* or *Flow*, and anything that can change data waits for your click.
-- **Flows (Zapier-style automations)** — chain requests where later steps use values from
-  earlier responses (`{{steps.list_orders.body.items[0].id}}`), add conditions and AI steps,
-  run on demand or on a schedule (every N minutes) in the background.
+- **Flows and bots (Zapier-style, but programmable)** — chain requests, then filter, loop,
+  branch, remember state between runs and call Kimi mid-flow. Run on demand, every N
+  minutes, or whenever the page makes a matching request — in the background.
 - **Keep logs on reload** — one switch in the popup header keeps the captured traffic (and
   the chat) across page reloads and navigations.
 - **Traffic** — everything the old DevTools panel did, in the popup: full-text/regex search
@@ -53,6 +53,8 @@ Things to try:
 - Paste `curl 'https://api.example.com/v1/me' -H 'Authorization: Bearer …'` — Kimi runs it
   and explains the response.
 - “Every hour, get the newest order and post its id to https://hooks.example.com/x.”
+- “Whenever this page loads orders, post each new paid one to my webhook — never the same
+  order twice.”
 
 ### Tools Kimi can use
 
@@ -74,40 +76,66 @@ Settings → **Ask before Kimi acts**:
 
 The approval card shows the exact method, URL, headers (secrets abbreviated) and body.
 
-## Flows
+## Flows and bots
 
-A flow is an ordered list of steps. Build one by asking Kimi, or **Flows → New flow** for a
-JSON editor:
+A flow can be a two-call chain or a small bot: page through an API, filter the results,
+loop over the matches, branch, remember what it already handled, and run by itself on a
+schedule or **whenever the page makes a matching request**. Build one by asking Kimi, or
+**Flows → New flow**, which opens an example bot in the JSON editor:
 
 ```json
 {
-  "name": "Newest order check",
+  "name": "Paid order notifier",
+  "on_request": { "url_contains": "/api/orders", "method": "GET", "status": "2xx", "cooldown_seconds": 30 },
   "steps": [
-    { "id": "list_orders", "method": "GET", "url": "https://shop.example.com/api/orders",
-      "extract": { "first_id": "body.items[0].id" } },
-    { "id": "get_order", "method": "GET", "url": "https://shop.example.com/api/orders/{{vars.first_id}}",
-      "when": "{{vars.first_id}} exists", "expect_status": "2xx" },
-    { "id": "summary", "type": "ai", "prompt": "One line on this order: {{steps.get_order.body | json}}" }
-  ],
-  "schedule": { "enabled": true, "every_minutes": 60 }
+    { "id": "paid_new", "type": "filter", "items": "{{trigger.body.items}}",
+      "where": "{{item.status}} == paid and {{item.id}} > {{state.last_id | default:0}}" },
+    { "id": "check", "type": "if", "condition": "{{vars.paid_new | length}} > 0",
+      "then": [
+        { "id": "each", "type": "for_each", "items": "{{vars.paid_new}}", "as": "order", "delay_ms": 200,
+          "steps": [
+            { "id": "notify", "method": "POST", "url": "https://hooks.example.com/orders",
+              "body": { "id": "{{order.id}}" }, "expect_status": "2xx", "retry": { "times": 2 } } ] },
+        { "id": "remember", "type": "set", "state": { "last_id": "{{vars.paid_new | pluck:id | max}}" } },
+        { "id": "report", "type": "log", "message": "notified {{vars.paid_new | pluck:id | join:\", \"}}" } ],
+      "else": [ { "id": "quiet", "type": "stop", "message": "nothing new" } ] }
+  ]
 }
 ```
 
-- **Step types** — `http` (`method/url/headers/body/query`, or `curl`, or Kimi's `from_id`),
-  `ai` (a Kimi prompt over earlier results), `delay` (`ms`).
-- **Templates** — `{{vars.x}}`, `{{steps.<id>.status}}`, `{{steps.<id>.body.<path>}}`,
-  `{{steps.<id>.headers.<name>}}`, `{{now}}`, `{{now_iso}}`, `{{today}}`, `{{uuid}}`; filters
-  `| json | urlencode | first | last | length | trim | upper | lower | default:x`. A JSON body
-  value that is exactly one template keeps its type.
-- **Per step** — `extract`, `when` (`==`, `!=`, `>`, `<`, `>=`, `<=`, `contains`,
-  `!contains`, `matches`, `exists`, `missing`), `expect_status`, `continue_on_error`.
-- **Schedules** run in the background worker via `chrome.alarms` while Chrome is open, even
-  with the original page closed. A scheduled run that fails puts a red `!` on the toolbar
-  icon and a notice in the Flows tab. The last 15 runs per flow are kept.
-- **Copy as Markdown** on each flow copies the whole thing as a document: schedule, every
-  step's request (with a cURL), how values pass between steps, the last run's result per
-  step, and the JSON definition. Literal secrets (auth headers, cookies, token fields) are
-  masked; `{{templates}}` stay as written. **Edit** still shows the raw definition.
+| Step | Does |
+| --- | --- |
+| `http` | `method/url/headers/body/query`, or `curl`, or Kimi's `from_id`; `extract`, `expect_status`, `retry`, `timeout_ms` |
+| `filter` | keeps the `items` where `where` holds → `{{vars.<save_as or id>}}` |
+| `map` | turns each item into `value` → a new list |
+| `for_each` | runs nested `steps` per item (`as`, `max`, `delay_ms`, `on_item_error`, `collect`) |
+| `repeat` | runs nested `steps` `until`/`while` a condition, up to `max` — pagination, polling |
+| `if` | `condition` → `then` / `else` steps |
+| `set` | assigns `vars`, or `state` — memory kept between runs |
+| `ai` | a Kimi prompt over earlier results (`json: true` for structured output) |
+| `stop`, `log`, `delay`, `run_flow` | end early (ok/fail), write to the run log, wait, call another flow |
+
+- **Templates** — `{{vars.x}}`, `{{state.x}}`, `{{steps.<id>.body.<path>}}` / `.status` /
+  `.headers.<name>`, `{{item.x}}` (or the loop's `as` name), `{{loop.index}}`,
+  `{{trigger.body.<path>}}`, `{{now}}`, `{{uuid}}` and more. Filters transform values:
+  `where:status=paid`, `pluck:id`, `sort:-total`, `unique`, `sum`, `max`, `slice:0:5`,
+  `join:", "`, `add:1`, `default:x`, `json` … A JSON value that is exactly one template keeps
+  its type.
+- **Conditions** (`when` on any step, `where`, `condition`, `until`, `while`) — `==`, `!=`,
+  `>`, `<`, `>=`, `<=`, `contains`, `matches`, `exists`, `missing`, joined with `and` / `or`,
+  negated with `not`.
+- **Triggers** — `schedule` (every N minutes, via `chrome.alarms`) and `on_request` (the page's
+  own fetch/XHR matching URL, method and status; at most once per cooldown; requests NetScope
+  sends never trigger). The response is `{{trigger.body}}`. Both keep working while Chrome is
+  open, even with the page closed; pause either from the flow card.
+- **Limits per run** — 2,000 step executions and 4 minutes; loops default to 100 items
+  (`for_each`) or 10 passes (`repeat`). A run that fails by itself puts a red `!` on the
+  toolbar icon and a notice in the Flows tab. The last 15 runs per flow are kept, each with
+  per-step results (loop bodies show how many times they ran and failed) and the run log.
+- **Copy as Markdown** on each flow copies the whole thing as a document: triggers, the step
+  outline (2, 2.1, 2.1.1 …) with each request as cURL, the last run's result per step, the
+  run log, the memory, and the JSON definition. Literal secrets (auth headers, cookies, token
+  fields) are masked; `{{templates}}` stay as written. **Edit** still shows the raw definition.
 
 ![Flows tab with step results from the last run](docs/popup-flows.png)
 

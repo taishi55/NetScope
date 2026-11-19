@@ -1,5 +1,6 @@
 /* NetScope – flows-ui.js
- * The Flows view: saved request chains, their schedules and run history.
+ * The Flows view: saved flows and bots — their step trees (loops, branches),
+ * schedules, page-request triggers, memory and run history.
  * Flows are stored and run by the background worker (flow-engine.js); this
  * file only renders them and sends commands over the app's port.
  */
@@ -11,6 +12,7 @@ window.__netscopeFlowsUi = (() => {
   const open = new Set(); // flow ids whose steps are expanded
   const runsCache = new Map(); // flow id -> runs[]
   const live = new Map(); // flow id -> step results while a manual run is in flight
+  const stateCache = new Map(); // flow id -> memory ({{state.x}}) kept between runs
   let editing = null; // flow being edited as JSON (null = list)
 
   const $ = (id) => document.getElementById(id);
@@ -40,23 +42,39 @@ window.__netscopeFlowsUi = (() => {
     [1440, "Every day"]
   ];
 
+  // A small bot: only acts on posts it has not seen before, thanks to state.
   const TEMPLATE = {
-    name: "List then detail",
-    description: "Fetch a list, take the first item's id, then fetch that item.",
+    name: "New posts digest",
+    description: "Every hour: fetch posts, keep user 1's posts newer than last time, look up each one's comment count, remember the newest id.",
     steps: [
+      { id: "list", type: "http", method: "GET", url: "https://jsonplaceholder.typicode.com/posts", expect_status: "2xx", retry: { times: 2, delay_ms: 1000 } },
       {
-        id: "list",
-        type: "http",
-        method: "GET",
-        url: "https://jsonplaceholder.typicode.com/posts",
-        extract: { first_id: "body[0].id" }
+        id: "fresh",
+        type: "filter",
+        items: "{{steps.list.body}}",
+        where: "{{item.userId}} == 1 and {{item.id}} > {{state.last_id | default:0}}",
+        limit: 5
       },
       {
-        id: "detail",
-        type: "http",
-        method: "GET",
-        url: "https://jsonplaceholder.typicode.com/posts/{{vars.first_id}}",
-        when: "{{vars.first_id}} exists"
+        id: "any_new",
+        type: "if",
+        condition: "{{vars.fresh | length}} > 0",
+        then: [
+          {
+            id: "each_post",
+            type: "for_each",
+            items: "{{vars.fresh}}",
+            as: "post",
+            max: 5,
+            delay_ms: 200,
+            on_item_error: "continue",
+            collect: { save_as: "digest", value: { id: "{{post.id}}", title: "{{post.title}}", comments: "{{steps.comments.body | length}}" } },
+            steps: [{ id: "comments", type: "http", method: "GET", url: "https://jsonplaceholder.typicode.com/posts/{{post.id}}/comments" }]
+          },
+          { id: "remember", type: "set", state: { last_id: "{{vars.fresh | pluck:id | max}}" } },
+          { id: "report", type: "log", message: "{{vars.digest | length}} new: {{vars.digest | pluck:title | join:\", \"}}" }
+        ],
+        else: [{ id: "quiet", type: "stop", outcome: "ok", message: "nothing new since post {{state.last_id}}" }]
       }
     ],
     schedule: { enabled: false, every_minutes: 60 }
@@ -73,15 +91,33 @@ window.__netscopeFlowsUi = (() => {
     // Every card's run history, fetched up front: "Copy as Markdown" needs it
     // and must write the clipboard while the click's activation still holds.
     await Promise.all(
-      flows.map((f) =>
+      flows.flatMap((f) => [
         api
           .rpc("flows.runs", { id: f.id })
           .then((r) => runsCache.set(f.id, r))
+          .catch(() => {}),
+        api
+          .rpc("flows.state", { id: f.id })
+          .then((st) => stateCache.set(f.id, st || {}))
           .catch(() => {})
-      )
+      ])
     );
     if (!editing) render(); // never wipe JSON the user is typing
     renderAlert();
+  }
+
+  // Runs and memory writes arrive in bursts (a bot firing on page traffic):
+  // coalesce them, and only do the full reload while the Flows tab is shown.
+  let loadTimer = 0;
+  function scheduleLoad() {
+    clearTimeout(loadTimer);
+    loadTimer = setTimeout(async () => {
+      if (document.getElementById("view-flows").classList.contains("on")) return load();
+      try {
+        flows = await api.rpc("flows.list");
+      } catch (_) {}
+      renderAlert();
+    }, 300);
   }
 
   async function renderAlert() {
@@ -99,7 +135,7 @@ window.__netscopeFlowsUi = (() => {
     }
     box.replaceChildren();
     const p = node("p");
-    p.appendChild(node("strong", "", `“${alert.flowName}” failed on its schedule`));
+    p.appendChild(node("strong", "", `“${alert.flowName}” failed when it ran by itself (${alert.trigger === "request" ? "page request" : "schedule"})`));
     p.appendChild(document.createTextNode(` ${typeof fmtAgo === "function" ? fmtAgo(alert.at) : ""}: ${alert.error || "unknown error"}`));
     box.appendChild(p);
     box.appendChild(
@@ -124,9 +160,83 @@ window.__netscopeFlowsUi = (() => {
     return node("span", "method" + (w ? " write" : ""), m);
   }
 
+  // Saved flows are validated (type is set); approval previews may not be.
+  function typeOf(st) {
+    if (st.type) return st.type;
+    if (st.prompt) return "ai";
+    if (st.then || st.condition) return "if";
+    if (st.items && Array.isArray(st.steps)) return "for_each";
+    if (Array.isArray(st.steps)) return "repeat";
+    if (st.items && st.where) return "filter";
+    if (st.items && st.value !== undefined) return "map";
+    if (st.url || st.curl || st.from_id != null) return "http";
+    if (st.ms != null) return "delay";
+    if (st.vars || st.state) return "set";
+    if (st.flow) return "run_flow";
+    if (st.outcome) return "stop";
+    if (st.message) return "log";
+    return "http";
+  }
+
+  const TYPE_LABEL = {
+    ai: "Kimi",
+    delay: "wait",
+    set: "set",
+    filter: "filter",
+    map: "map",
+    for_each: "for each",
+    repeat: "repeat",
+    if: "if",
+    stop: "stop",
+    log: "log",
+    run_flow: "flow"
+  };
+
+  const short = (v, n) => {
+    const t = typeof v === "string" ? v : JSON.stringify(v);
+    return t && t.length > (n || 120) ? t.slice(0, n || 120) + "…" : t || "";
+  };
+
+  function describeStep(st, t) {
+    switch (t) {
+      case "ai":
+        return short(st.prompt, 140);
+      case "delay":
+        return `${st.ms || 0} ms`;
+      case "set": {
+        const parts = [];
+        for (const scope of ["vars", "state"]) {
+          if (st[scope] && typeof st[scope] === "object") for (const k of Object.keys(st[scope])) parts.push(`${scope}.${k} = ${short(st[scope][k], 50)}`);
+        }
+        return parts.join(", ");
+      }
+      case "filter":
+        return `${short(st.items, 60)} where ${short(st.where, 80)} → vars.${st.save_as || st.id}${st.limit ? ` (first ${st.limit})` : ""}`;
+      case "map":
+        return `${short(st.items, 60)} → ${short(st.value, 60)} → vars.${st.save_as || st.id}`;
+      case "for_each":
+        return `${st.as || "item"} in ${short(st.items, 80)}${st.max ? ` · max ${st.max}` : ""}${st.on_item_error === "continue" ? " · skips failed items" : ""}`;
+      case "repeat":
+        return `${st.until ? "until " + short(st.until, 80) : st.while ? "while " + short(st.while, 80) : ""} · max ${st.max || 10}`;
+      case "if":
+        return short(st.condition, 140);
+      case "stop":
+        return `${st.outcome === "fail" ? "as failed" : "as done"}${st.message ? ": " + short(st.message, 100) : ""}`;
+      case "log":
+        return short(st.message, 140);
+      case "run_flow": {
+        const sub = flows.find((x) => x.id === st.flow);
+        return sub ? `“${sub.name}”` : String(st.flow);
+      }
+      default:
+        return "";
+    }
+  }
+
   function stepSummary(st) {
     const line = node("div", "step-line");
-    if (st.type === "http") {
+    const t = typeOf(st);
+    if (t === "http") {
       if (st.curl) {
         let parsed = null;
         try {
@@ -136,27 +246,32 @@ window.__netscopeFlowsUi = (() => {
         line.appendChild(node("span", "url", parsed ? parsed.url : st.curl.slice(0, 100)));
       } else {
         line.appendChild(methodPill((st.method || "GET").toUpperCase()));
-        line.appendChild(node("span", "url", st.url || ""));
+        line.appendChild(node("span", "url", st.url || (st.from_id != null ? `captured request #${st.from_id}` : "")));
       }
-    } else if (st.type === "ai") {
-      line.appendChild(node("span", "method", "Kimi"));
-      line.appendChild(node("span", "url", String(st.prompt || "").slice(0, 140)));
     } else {
-      line.appendChild(node("span", "method", "wait"));
-      line.appendChild(node("span", "", `${st.ms || 0} ms`));
+      line.appendChild(node("span", "method kind-" + t, TYPE_LABEL[t] || t));
+      line.appendChild(node("span", "url", describeStep(st, t)));
     }
+    if (st.when) line.title = "Runs only when " + st.when;
     return line;
   }
 
   function stepResult(sr) {
     const box = node("div", "step-res" + (sr.ok ? "" : " fail"));
     const parts = [];
-    if (sr.skipped) parts.push("skipped — " + (sr.note || "condition was false"));
-    else if (!sr.ok) parts.push(sr.error || "failed");
+    const io = sr.type === "http" || sr.type === "ai";
+    if (sr.skipped) parts.push("skipped" + (sr.runs > 1 ? ` all ${sr.runs} times` : "") + " — " + (sr.note || "condition was false"));
     else {
-      if (sr.status) parts.push(String(sr.status));
-      if (sr.ms != null) parts.push(sr.ms + " ms");
+      if (sr.runs > 1) {
+        parts.push(`ran ${sr.runs}×` + (sr.failCount ? `, ${sr.failCount} failed` : "") + (sr.skipCount ? `, ${sr.skipCount} skipped` : ""));
+      }
+      if (!sr.ok) parts.push(sr.error || "failed");
+      else {
+        if (sr.status) parts.push(String(sr.status));
+        if (sr.ms != null) parts.push(sr.ms + " ms");
+      }
       if (sr.extracted) parts.push("set " + Object.keys(sr.extracted).map((k) => `${k} = ${sr.extracted[k]}`).join(", "));
+      if (!io && sr.output) parts.push(sr.output);
     }
     box.appendChild(document.createTextNode(parts.join(" · ")));
     if (sr.entryId && typeof showDetail === "function") {
@@ -169,8 +284,53 @@ window.__netscopeFlowsUi = (() => {
       });
       box.appendChild(a);
     }
-    if (sr.output && !sr.skipped) box.appendChild(node("pre", "", String(sr.output).slice(0, 1200)));
+    if (io && sr.output && !sr.skipped) box.appendChild(node("pre", "", String(sr.output).slice(0, 1200)));
     return box;
+  }
+
+  // The step tree, with each step's latest result matched by its path:
+  // loop bodies live under "<id>[]", if-branches under "<id>.then" / ".else".
+  function stepTree(steps, results, prefix) {
+    const ol = node("ol", "steps");
+    for (const st of steps || []) {
+      if (!st || typeof st !== "object") continue;
+      const t = typeOf(st);
+      const path = prefix ? prefix + "/" + st.id : st.id;
+      const li = node("li");
+      li.appendChild(stepSummary(st));
+      const sr = results && results.find((x) => x.id === path);
+      if (sr) li.appendChild(stepResult(sr));
+      const branch = (label, list, childPrefix) => {
+        if (!Array.isArray(list) || !list.length) return;
+        const wrap = node("div", "branch");
+        if (label) wrap.appendChild(node("div", "branch-label", label));
+        wrap.appendChild(stepTree(list, results, childPrefix));
+        li.appendChild(wrap);
+      };
+      if (t === "for_each") branch(`For each ${st.as || "item"}:`, st.steps, path + "[]");
+      else if (t === "repeat") branch("Each pass:", st.steps, path + "[]");
+      else if (t === "if") {
+        branch("Then:", st.then, path + ".then");
+        branch("Else:", st.else, path + ".else");
+      }
+      ol.appendChild(li);
+    }
+    return ol;
+  }
+
+  function countSteps(steps) {
+    let n = 0;
+    for (const st of steps || []) {
+      n++;
+      for (const k of ["steps", "then", "else"]) if (Array.isArray(st[k])) n += countSteps(st[k]);
+    }
+    return n;
+  }
+
+  function triggerLabel(t) {
+    if (!t) return "";
+    const what = [t.method, t.url_contains ? `…${t.url_contains}…` : "any URL"].filter(Boolean).join(" ");
+    return `When ${t.host ? "a page on " + t.host : "a page on any site"} calls ${what}${t.status ? ` (${t.status})` : ""}`;
   }
 
   function render() {
@@ -189,7 +349,7 @@ window.__netscopeFlowsUi = (() => {
         node(
           "p",
           "hint",
-          "Ask Kimi something like “every hour, get the newest order and post its id to my webhook”. It builds the flow from requests this page already made, runs it once, then schedules it."
+          "Ask Kimi something like “whenever this page loads orders, post each new paid one to my webhook” or “every hour, page through all users and flag the inactive ones”. It builds the flow from requests this page already made, runs it once, then schedules it. Or start from New flow, which opens a small example bot."
         )
       );
       list.appendChild(empty);
@@ -204,8 +364,14 @@ window.__netscopeFlowsUi = (() => {
       if (f.description) card.appendChild(node("p", "flow-desc", f.description));
 
       const meta = node("div", "flow-meta");
-      meta.appendChild(node("span", "", `${(f.steps || []).length} step${(f.steps || []).length === 1 ? "" : "s"}`));
+      const n = countSteps(f.steps);
+      meta.appendChild(node("span", "", `${n} step${n === 1 ? "" : "s"}`));
       meta.appendChild(node("span", "", scheduleLabel(f)));
+      if (f.on_request) {
+        const tl = node("span", "", triggerLabel(f.on_request) + (f.on_request.enabled ? "" : " — paused"));
+        tl.title = `Runs by itself at most once every ${f.on_request.cooldown_seconds} s`;
+        meta.appendChild(tl);
+      }
       if (f.lastRun) {
         const lr = node("span", f.lastRun.ok ? "ok" : "fail", (f.lastRun.ok ? "Last run ok" : "Last run failed") + ` ${typeof fmtAgo === "function" ? fmtAgo(f.lastRun.at) : ""}`);
         if (!f.lastRun.ok && f.lastRun.error) lr.title = f.lastRun.error;
@@ -238,6 +404,16 @@ window.__netscopeFlowsUi = (() => {
       }
       sel.addEventListener("change", () => setSchedule(f, Number(sel.value)));
       actions.appendChild(sel);
+      if (f.on_request) {
+        const lab = node("label", "chk");
+        lab.title = triggerLabel(f.on_request);
+        const cb = node("input");
+        cb.type = "checkbox";
+        cb.checked = !!f.on_request.enabled;
+        cb.addEventListener("change", () => setTrigger(f, cb.checked));
+        lab.append(cb, document.createTextNode(" On page requests"));
+        actions.appendChild(lab);
+      }
 
       actions.appendChild(
         btn(open.has(f.id) ? "Hide steps" : "Steps & runs", async () => {
@@ -278,15 +454,32 @@ window.__netscopeFlowsUi = (() => {
       if (open.has(f.id) || live.has(f.id)) {
         const runs = runsCache.get(f.id) || [];
         const latest = live.get(f.id) || (runs[0] && runs[0].steps) || [];
-        const ol = node("ol", "steps");
-        for (const st of f.steps || []) {
-          const li = node("li");
-          li.appendChild(stepSummary(st));
-          const sr = latest.find((x) => x.id === st.id);
-          if (sr) li.appendChild(stepResult(sr));
-          ol.appendChild(li);
+        card.appendChild(stepTree(f.steps, latest, ""));
+
+        const last = !live.has(f.id) && runs[0];
+        if (last && last.logs && last.logs.length) {
+          const logBox = node("div", "flow-log");
+          logBox.appendChild(node("div", "branch-label", "Run log"));
+          logBox.appendChild(node("pre", "", last.logs.slice(-20).map((l) => l.message).join("\n")));
+          card.appendChild(logBox);
         }
-        card.appendChild(ol);
+        if (last && last.note) card.appendChild(node("p", "flow-desc", "Stopped early: " + last.note));
+
+        const mem = stateCache.get(f.id) || {};
+        if (Object.keys(mem).length) {
+          const memBox = node("div", "flow-meta");
+          memBox.appendChild(node("span", "", "Memory: " + short(mem, 200)));
+          memBox.appendChild(
+            btn("Clear memory", async () => {
+              await api.rpc("flows.resetState", { id: f.id }).catch((e) => say(e.message));
+              stateCache.set(f.id, {});
+              say(`Cleared “${f.name}”'s memory — the next run starts fresh`);
+              render();
+            }, "ghost")
+          );
+          memBox.title = "Values the flow saved with set → state, kept between runs";
+          card.appendChild(memBox);
+        }
         if (runs.length > 1) {
           const hist = node("div", "flow-meta");
           hist.appendChild(node("span", "", "Recent runs:"));
@@ -328,6 +521,18 @@ window.__netscopeFlowsUi = (() => {
     try {
       await api.rpc("flows.save", { flow: next });
       say(minutes > 0 ? `“${f.name}” scheduled: ${scheduleLabel(next).toLowerCase()}` : `“${f.name}” is manual only now`);
+    } catch (err) {
+      say(err.message);
+    }
+    load();
+  }
+
+  async function setTrigger(f, on) {
+    const next = JSON.parse(JSON.stringify(f));
+    next.on_request = Object.assign({}, f.on_request, { enabled: !!on });
+    try {
+      await api.rpc("flows.save", { flow: next });
+      say(on ? `“${f.name}” reacts to page requests again` : `“${f.name}” no longer reacts to page requests`);
     } catch (err) {
       say(err.message);
     }
@@ -501,7 +706,12 @@ window.__netscopeFlowsUi = (() => {
         ? `${scheduleLabel(f)}, in the background while Chrome is open`
         : "Manual only";
     out.push(`- **Schedule:** ${sched}`);
-    out.push(`- **Steps:** ${steps.length}`);
+    if (f.on_request) {
+      out.push(
+        `- **Trigger:** ${triggerLabel(f.on_request)}, at most once every ${f.on_request.cooldown_seconds} s${f.on_request.enabled ? "" : " (paused)"}`
+      );
+    }
+    out.push(`- **Steps:** ${countSteps(steps)}`);
     const vars = maskJson(f.vars || {}, m);
     if (Object.keys(vars).length) out.push(`- **Starting variables:** ${code(JSON.stringify(vars))}`);
     if (last) {
@@ -510,73 +720,156 @@ window.__netscopeFlowsUi = (() => {
     out.push(`- **Flow id:** ${code(f.id || "(unsaved)")}`, "");
 
     out.push("## Steps", "");
-    steps.forEach((st, i) => {
-      const kind = st.type === "ai" ? "Kimi step" : st.type === "delay" ? "Delay" : "HTTP request";
-      out.push(`### ${i + 1}. ${code(st.id)} — ${kind}${st.name ? ` (${st.name})` : ""}`, "");
+    const results = (last && last.steps) || [];
+    const KIND = {
+      http: "HTTP request",
+      ai: "Kimi step",
+      delay: "Delay",
+      set: "Set values",
+      filter: "Filter",
+      map: "Map",
+      for_each: "Loop over items",
+      repeat: "Repeat",
+      if: "Condition",
+      stop: "Stop",
+      log: "Log",
+      run_flow: "Run another flow"
+    };
 
-      let httpReq = null;
-      if (st.type === "ai") {
-        out.push("Prompt:", "", fence("text", scrubText(st.prompt || "", m)), "");
-      } else if (st.type === "delay") {
-        out.push(`Waits ${Number(st.ms) || 0} ms.`, "");
-      } else {
-        const req = (httpReq = stepRequest(st, m));
-        if (req.raw) {
-          out.push("cURL (could not be parsed, shown as written):", "", fence("bash", req.raw), "");
-        } else {
-          out.push(`**Request:** ${code(req.method + " " + req.url)}`, "");
-          if (req.headers.length) out.push("Headers:", "", fence("http", req.headers.map((h) => `${h.name}: ${h.value}`).join("\n")), "");
-          if (req.body != null && req.body !== "") {
-            let b = req.body;
-            let lang = "text";
-            if (typeof b !== "string") {
-              b = JSON.stringify(b, null, 2);
-              lang = "json";
-            } else {
-              try {
-                b = JSON.stringify(JSON.parse(b), null, 2);
-                lang = "json";
-              } catch (_) {}
+    // Numbered like an outline: 2, 2.1, 2.2 … ; an if's else-steps continue
+    // the numbering after its then-steps.
+    const emit = (list, num, prefix, context, offset) => {
+      (list || []).forEach((st, i) => {
+        if (!st || typeof st !== "object") return;
+        const t = typeOf(st);
+        const k = (offset || 0) + i + 1;
+        const n = num ? `${num}.${k}` : String(k);
+        const path = prefix ? prefix + "/" + st.id : st.id;
+        const level = Math.min(6, 3 + (n.split(".").length - 1));
+        out.push(`${"#".repeat(level)} ${n} ${code(st.id)} — ${KIND[t] || t}${st.name ? ` (${st.name})` : ""}${context ? ` · ${context}` : ""}`, "");
+
+        let httpReq = null;
+        if (t === "ai") {
+          out.push("Prompt:", "", fence("text", scrubText(st.prompt || "", m)), "");
+          if (st.json) out.push("Asks for JSON back.", "");
+        } else if (t === "delay") {
+          out.push(`Waits ${Number(st.ms) || 0} ms.`, "");
+        } else if (t === "set") {
+          for (const scope of ["vars", "state"]) {
+            if (!st[scope] || typeof st[scope] !== "object") continue;
+            for (const k of Object.keys(st[scope])) {
+              const v = st[scope][k];
+              const shown = SECRET_KEY.test(k) && typeof v !== "object" ? maskValue(v, m) : typeof v === "string" ? scrubText(v, m) : JSON.stringify(maskJson(v, m));
+              out.push(`- ${code(scope + "." + k)} = ${code(shown)}${scope === "state" ? " (remembered between runs)" : ""}`);
             }
-            out.push("Body:", "", fence(lang, b), "");
           }
-          if (st.source_entry) out.push(`Built from captured request #${st.source_entry}.`, "");
+          out.push("");
+        } else if (t === "filter") {
+          out.push(`Keeps the items of ${code(st.items)} where ${code(st.where)} (each item is ${code("{{" + (st.as || "item") + "}}")})${st.limit ? `, at most ${st.limit}` : ""}. Saves the list to ${code("{{vars." + (st.save_as || st.id) + "}}")}.`, "");
+        } else if (t === "map") {
+          out.push(`Turns each item of ${code(st.items)} into:`, "", fence("json", JSON.stringify(maskJson(st.value, m), null, 2)), "", `Saves the list to ${code("{{vars." + (st.save_as || st.id) + "}}")}.`, "");
+        } else if (t === "for_each") {
+          const bits = [`Runs the steps below once per item of ${code(st.items)}, as ${code("{{" + (st.as || "item") + "}}")}`, `at most ${st.max || 100} items`];
+          if (st.delay_ms) bits.push(`${st.delay_ms} ms between items`);
+          bits.push(st.on_item_error === "continue" ? "a failed item is skipped" : "a failed item stops the flow");
+          out.push(bits.join(", ") + ".", "");
+          if (st.collect) out.push(`After each item, adds ${code(JSON.stringify(maskJson(st.collect.value, m)))} to ${code("{{vars." + (st.collect.save_as || st.id) + "}}")}.`, "");
+        } else if (t === "repeat") {
+          const cond = st.until ? `until ${code(st.until)} (checked after each pass)` : st.while ? `while ${code(st.while)} (checked before each pass)` : "";
+          out.push(`Repeats the steps below ${cond}, at most ${st.max || 10} times${st.delay_ms ? `, ${st.delay_ms} ms apart` : ""}. ${code("{{loop.index}}")} counts passes from 0.`, "");
+        } else if (t === "if") {
+          out.push(`If ${code(st.condition)}, runs the “then” steps, otherwise the “else” steps.`, "");
+        } else if (t === "stop") {
+          out.push(`Ends the run ${st.outcome === "fail" ? "as failed" : "successfully"}${st.message ? ` with ${code(scrubText(st.message, m))}` : ""}.`, "");
+        } else if (t === "log") {
+          out.push(`Writes ${code(scrubText(st.message || "", m))} to the run log.`, "");
+        } else if (t === "run_flow") {
+          const sub = flows.find((x) => x.id === st.flow);
+          out.push(`Runs ${sub ? `“${sub.name}” (${code(st.flow)})` : code(st.flow)}${st.vars ? ` with ${code(JSON.stringify(maskJson(st.vars, m)))}` : ""}. Its variables come back as ${code("{{steps." + st.id + ".body}}")}.`, "");
+        } else {
+          const req = (httpReq = stepRequest(st, m));
+          if (req.raw) {
+            out.push("cURL (could not be parsed, shown as written):", "", fence("bash", req.raw), "");
+          } else {
+            out.push(`**Request:** ${code(req.method + " " + req.url)}`, "");
+            if (req.headers.length) out.push("Headers:", "", fence("http", req.headers.map((h) => `${h.name}: ${h.value}`).join("\n")), "");
+            if (req.body != null && req.body !== "") {
+              let b = req.body;
+              let lang = "text";
+              if (typeof b !== "string") {
+                b = JSON.stringify(b, null, 2);
+                lang = "json";
+              } else {
+                try {
+                  b = JSON.stringify(JSON.parse(b), null, 2);
+                  lang = "json";
+                } catch (_) {}
+              }
+              out.push("Body:", "", fence(lang, b), "");
+            }
+            if (st.source_entry) out.push(`Built from captured request #${st.source_entry}.`, "");
+          }
         }
-      }
 
-      const notes = [];
-      if (st.extract && typeof st.extract === "object") {
-        for (const k of Object.keys(st.extract)) notes.push(`Saves ${code("{{vars." + k + "}}")} from ${code(st.extract[k])}`);
-      }
-      if (st.when) notes.push(`Runs only when ${code(st.when)}`);
-      if (st.type === "http" || !st.type) notes.push(`Expects status ${st.expect_status ? code(st.expect_status) : "2xx or 3xx"}`);
-      if (st.timeout_ms) notes.push(`Times out after ${st.timeout_ms} ms`);
-      notes.push(st.continue_on_error ? "On failure: continues with the next step" : "On failure: stops the flow");
-      for (const n of notes) out.push("- " + n);
-      out.push("");
-
-      if (httpReq && !httpReq.raw) out.push("As cURL:", "", fence("bash", globalThis.__netscopeCurl.build(httpReq)), "");
-
-      const sr = last && (last.steps || []).find((x) => x.id === st.id);
-      if (sr) {
-        let res;
-        if (sr.skipped) res = "skipped (condition was false)";
-        else if (!sr.ok) res = "failed — " + (sr.error || "unknown error");
-        else res = [sr.status ? String(sr.status) : "ok", sr.ms != null ? `${sr.ms} ms` : ""].filter(Boolean).join(" in ");
-        if (sr.extracted) {
-          const parts = Object.keys(sr.extracted).map((k) => `${k} = ${SECRET_KEY.test(k) ? maskValue(sr.extracted[k], m) : sr.extracted[k]}`);
-          if (parts.length) res += "; saved " + parts.join(", ");
+        const notes = [];
+        if (st.extract && typeof st.extract === "object") {
+          for (const k of Object.keys(st.extract)) notes.push(`Saves ${code("{{vars." + k + "}}")} from ${code(st.extract[k])}`);
         }
-        out.push(`Last run: ${res}`, "");
-      } else if (last) out.push("Last run: not reached", "");
-    });
+        if (st.when) notes.push(`Runs only when ${code(st.when)}`);
+        if (t === "http") {
+          notes.push(`Expects status ${st.expect_status ? code(st.expect_status) : "2xx or 3xx"}`);
+          if (st.retry && st.retry.times) notes.push(`Retries up to ${st.retry.times}× on network errors, 429 and 5xx`);
+          if (st.timeout_ms) notes.push(`Times out after ${st.timeout_ms} ms`);
+        }
+        if (t !== "stop") notes.push(st.continue_on_error ? "On failure: continues with the next step" : "On failure: stops the flow");
+        for (const x of notes) out.push("- " + x);
+        out.push("");
+
+        if (httpReq && !httpReq.raw) out.push("As cURL:", "", fence("bash", globalThis.__netscopeCurl.build(httpReq)), "");
+
+        const sr = results.find((x) => x.id === path);
+        if (sr) {
+          let res;
+          if (sr.skipped) res = "skipped (condition was false)";
+          else {
+            const counts = sr.runs > 1 ? `ran ${sr.runs}×${sr.failCount ? `, ${sr.failCount} failed` : ""}${sr.skipCount ? `, ${sr.skipCount} skipped` : ""}; ` : "";
+            if (!sr.ok) res = counts + "failed — " + (sr.error || "unknown error");
+            else if (t === "http" || t === "ai") res = counts + [sr.status ? String(sr.status) : "ok", sr.ms != null ? `${sr.ms} ms` : ""].filter(Boolean).join(" in ");
+            else res = counts + (sr.output ? scrubText(sr.output, m) : "ok");
+          }
+          if (sr.extracted) {
+            const parts = Object.keys(sr.extracted).map((k) => `${k} = ${SECRET_KEY.test(k) ? maskValue(sr.extracted[k], m) : sr.extracted[k]}`);
+            if (parts.length) res += "; saved " + parts.join(", ");
+          }
+          out.push(`Last run: ${res}`, "");
+        } else if (last) out.push("Last run: not reached", "");
+
+        if (t === "for_each") emit(st.steps, n, path + "[]", `for each ${st.as || "item"}`);
+        else if (t === "repeat") emit(st.steps, n, path + "[]", "each pass");
+        else if (t === "if") {
+          emit(st.then, n, path + ".then", "then", 0);
+          emit(st.else, n, path + ".else", "else", (st.then || []).length);
+        }
+      });
+    };
+    emit(steps, "", "", "", 0);
+
+    if (last && last.logs && last.logs.length) {
+      out.push("## Last run log", "", fence("text", last.logs.slice(-50).map((l) => scrubText(l.message, m)).join("\n")), "");
+    }
+    const memory = stateCache.get(f.id);
+    if (memory && Object.keys(memory).length) {
+      out.push("## Memory (kept between runs)", "", fence("json", JSON.stringify(maskJson(memory, m), null, 2)), "");
+    }
 
     out.push(
       "## How values pass between steps",
       "",
-      "Anything in `{{ }}` is filled in when the flow runs: `{{vars.<name>}}` (starting variables and values saved by `extract`), " +
-        "`{{steps.<id>.status}}`, `{{steps.<id>.body.<path>}}`, `{{steps.<id>.headers.<name>}}`, `{{now}}`, `{{now_iso}}`, `{{today}}`, `{{uuid}}`. " +
-        "Filters: `| json`, `| urlencode`, `| first`, `| last`, `| length`, `| trim`, `| upper`, `| lower`, `| default:x`.",
+      "Anything in `{{ }}` is filled in when the flow runs: `{{vars.<name>}}` (starting variables, `extract`, `set`, `filter`, `map`, `collect`), " +
+        "`{{state.<name>}}` (memory kept between runs), `{{steps.<id>.status}}`, `{{steps.<id>.body.<path>}}`, `{{steps.<id>.headers.<name>}}`, " +
+        "`{{item}}` / the loop's name and `{{loop.index}}` inside loops, `{{trigger.body.<path>}}` when started by a page request, `{{now}}`, `{{now_iso}}`, `{{today}}`, `{{uuid}}`. " +
+        "Filters such as `| where:status=paid`, `| pluck:id`, `| max`, `| length`, `| join:\", \"` and `| add:1` transform values. " +
+        "Conditions compare with `==`, `!=`, `>`, `<`, `contains`, `exists`, `missing` and combine with `and` / `or`.",
       ""
     );
 
@@ -585,8 +878,12 @@ window.__netscopeFlowsUi = (() => {
     delete def.createdAt;
     delete def.updatedAt;
     def.vars = maskJson(def.vars || {}, { n: 0 });
-    def.steps = (def.steps || []).map((st) => {
+    const maskStep = (st) => {
       const s = Object.assign({}, st);
+      for (const k of ["steps", "then", "else"]) if (Array.isArray(s[k])) s[k] = s[k].map(maskStep);
+      if (s.vars && typeof s.vars === "object") s.vars = maskJson(s.vars, { n: 0 });
+      if (s.state && typeof s.state === "object") s.state = maskJson(s.state, { n: 0 });
+      if (typeof s.message === "string") s.message = scrubText(s.message, { n: 0 });
       if (s.headers) {
         const masked = {};
         for (const h of maskHeaders(s.headers, { n: 0 })) masked[h.name] = h.value;
@@ -605,7 +902,8 @@ window.__netscopeFlowsUi = (() => {
         s.curl = r.raw || globalThis.__netscopeCurl.build(r);
       }
       return s;
-    });
+    };
+    def.steps = (def.steps || []).map(maskStep);
     out.push("## Definition (JSON)", "");
     if (m.n) out.push("Masked values must be filled in before this can be pasted into **New flow**.", "");
     out.push(fence("json", JSON.stringify(def, null, 2)), "");
@@ -716,14 +1014,17 @@ window.__netscopeFlowsUi = (() => {
         );
     });
     api.subscribe((type, msg) => {
-      if (type === "flows-changed") load();
+      if (type === "flows-changed") scheduleLoad();
       if (type === "flow-step" && msg && live.has(msg.flowId)) {
-        live.get(msg.flowId).push(msg.step);
+        const arr = live.get(msg.flowId);
+        const i = arr.findIndex((x) => x.id === msg.step.id);
+        if (i >= 0) arr[i] = msg.step;
+        else arr.push(msg.step);
         render();
       }
     });
     api.whenReady().then(load);
   }
 
-  return { attach, onShown: load, flowToMarkdown };
+  return { attach, onShown: load, flowToMarkdown, stepTree };
 })();

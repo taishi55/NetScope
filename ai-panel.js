@@ -531,18 +531,7 @@ window.__netscopeAi = (() => {
       } else if (ask.flow) {
         const f = ask.flow;
         if (f.description) card.appendChild(node("p", "why", f.description));
-        const ol = node("ol", "steps");
-        for (const st of f.steps || []) {
-          const li = node("li");
-          const line = node("div", "step-line");
-          if (st.type === "http") {
-            line.appendChild(methodPill((st.method || (st.curl ? "cURL" : "GET")).toUpperCase()));
-            line.appendChild(node("span", "url", st.url || (st.curl || "").slice(0, 120)));
-          } else line.appendChild(node("span", "", st.type === "ai" ? "Kimi: " + String(st.prompt || "").slice(0, 120) : `Wait ${st.ms} ms`));
-          li.appendChild(line);
-          ol.appendChild(li);
-        }
-        card.appendChild(ol);
+        if (window.__netscopeFlowsUi) card.appendChild(window.__netscopeFlowsUi.stepTree(f.steps || []));
         if (ask.kind === "flow-delete") card.appendChild(node("p", "why", "Deleting removes the flow, its schedule and its run history."));
       }
 

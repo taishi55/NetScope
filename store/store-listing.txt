@@ -12,8 +12,8 @@ Ask what an endpoint does, why a request failed, or how the whole API fits toget
 CALL APIS LIKE POSTMAN
 Paste a cURL into the chat and Kimi runs it and explains the response, or ask it to replay a request the page made with different parameters. Or do it yourself: Edit & send turns any captured request into an editable cURL with a Send button. Requests run from the extension, so CORS doesn't get in the way. Anything that can change data waits for your click first.
 
-AUTOMATE MULTI-STEP FLOWS
-Describe it — "every hour, get the newest order and post its id to my webhook" — and Kimi builds a flow from requests the page already made, runs it once to prove it works, then schedules it. Steps pass values to each other ({{steps.list.body.items[0].id}}), can have conditions, and can include AI steps that summarize or decide. Schedules run in the background while Chrome is open.
+AUTOMATE FLOWS AND BUILD SMALL BOTS
+Describe it — "whenever this page loads orders, post each new paid one to my webhook, never the same one twice" — and Kimi builds it from requests the page already made, runs it once to prove it works, then turns it on. Flows go beyond a sequence of calls: filter results, loop over them, page through APIs, branch with if/else, remember what was handled between runs, call Kimi mid-flow, and run on a schedule or whenever the page makes a matching request. Copy any flow as a Markdown document with secrets masked.
 
 KEEP LOGS ON RELOAD
 One switch keeps the captured traffic — and your conversation — across page reloads and navigations.
