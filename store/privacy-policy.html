@@ -22,7 +22,7 @@
 </head>
 <body>
 <h1>NetScope — Privacy Policy</h1>
-<p class="date"><strong>Last updated: November 18, 2026</strong></p>
+<p class="date"><strong>Last updated: November 19, 2026</strong></p>
 <h2>Summary</h2>
 <p>NetScope captures the API traffic of the pages you open it on and keeps it on your own machine. It has no analytics, no telemetry, no error reporting and no accounts, and it never contacts the developer.</p>
 <p>Data leaves your machine in exactly two ways, both started by you:</p>
@@ -35,11 +35,14 @@
 <p>Where it is kept:</p>
 <ul>
   <li><strong>Capture log</strong> — in the extension's IndexedDB on your machine, per tab. A new page load starts a fresh log unless you turn on <strong>Keep logs on reload</strong>. A tab's log is deleted when the tab closes, and the whole database is wiped each time the browser starts. Each tab keeps at most the last 3,000 entries.</li>
-  <li><strong>Chat</strong> — per tab in <code>chrome.storage.session</code>, which Chrome clears when the browser closes.</li>
+  <li><strong>Conversations</strong> — every chat, including the traffic excerpts and tool results it contains, in the extension's IndexedDB until you delete it from History.</li>
+  <li><strong>Docs</strong> — markdown notes Kimi or you write in the Docs tab, in the extension's IndexedDB until you delete them. Kimi is told never to put tokens or cookies in docs, but a doc holds whatever was written into it.</li>
   <li><strong>Flows and run history</strong> — in <code>chrome.storage.local</code>; <strong>flow memory, collections and checkpoints</strong> — in the extension's IndexedDB. All stay until you delete them. Collections hold whatever data a flow's <code>collect</code> steps save from API responses (up to 100,000 items each); clear or export them from the flow card. A paused run keeps a checkpoint (its variables and progress) until it finishes or you discard it. A flow built from a captured request stores that request's headers, which can include authorization tokens. Run history keeps step outputs (up to 4 KB each) for the last 15 runs.</li>
   <li><strong>Settings and API key</strong> — in <code>chrome.storage.local</code> (below).</li>
 </ul>
 <p>Nothing is written outside your Chrome profile. No <code>chrome.debugger</code> is used.</p>
+<h2>Export and import</h2>
+<p>Settings → Your data → Export saves a JSON file through your browser's normal download: your conversations, flows with their memory and collections, docs and settings. The API key is included only if you tick that box. The file can contain captured tokens and personal data; NetScope never sends it anywhere. Import reads a file you choose and merges it in locally.</p>
 <h2>Kimi (optional AI assistant)</h2>
 <p><strong>Off by default.</strong> Nothing is sent until you enter a Moonshot API key, tick the consent box and click "Save and enable". After that, when you ask a question or use a quick action, NetScope sends to <code>https://api.moonshot.ai/v1/chat/completions</code>:</p>
 <ul>

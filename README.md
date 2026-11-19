@@ -65,6 +65,37 @@ Things to try:
 | `get_request`, `describe_json`, `get_websocket_frames`, `compare_requests`, `get_curl` | Drill into one request or diff two |
 | `http_request` | Send a request from a cURL, a captured request (`from_id`, real headers copied locally) or a URL, with overrides |
 | `validate_flow`, `save_flow`, `run_flow`, `list_flows`, `get_flow`, `get_collection`, `delete_flow` | Check, build, test (in the background for big jobs), schedule and manage flows; read their collections |
+| `list_docs`, `read_doc`, `write_doc`, `edit_doc`, `delete_doc` | Keep findings as markdown docs in the Docs tab |
+
+### Conversations
+
+- **Every conversation is kept.** New chat starts another; **History** lists them all
+  (searchable by title or site) and reopens any of them. A page reload brings the tab's
+  conversation back.
+- **Each answer's work folds away.** While Kimi works, its thinking, tool calls, requests and
+  approvals stream into an accordion; once the answer is in, the accordion collapses to one
+  line ("Worked for 1 min 12 s · 9 steps") above the answer. Click it to see every step.
+- **Edit or Retry any question.** Hover your message: Edit changes it and asks again, Retry
+  asks it again as is. Everything after it is replaced, in the chat and in Kimi's history.
+- **Answers recover instead of stopping.** A stream that drops or stalls (no data for
+  3 minutes) is retried; a step cut off by the reply limit is redone with more room; an answer
+  cut off mid-sentence is finished and joined into one message; a tool call left unanswered by
+  a reload is repaired. If a step still fails, the error offers **Continue**, which picks the
+  conversation up where it stopped without asking the question again.
+
+### Docs
+
+Kimi keeps markdown notes in the **Docs** tab — endpoints, auth, quirks, why a request failed,
+how a flow runs — with `list_docs`, `read_doc`, `write_doc`, `edit_doc` and `delete_doc`, and
+updates the doc for a site instead of starting a new one each time. You can read, edit, copy,
+download (`.md`) or delete them, or write your own.
+
+### Move to another browser
+
+Settings → **Your data** → **Export…** downloads one JSON file with your conversations, flows
+(with their memory and collections), docs and settings — the Kimi API key only if you tick it.
+**Import…** in NetScope on the other browser merges it in (newer copies win). The file contains
+captured data and flow headers, which can include tokens: keep it private.
 
 ### Staying under Kimi's rate limits
 
@@ -279,9 +310,9 @@ net-hook.js ─postMessage─▶ content.js ─sendMessage─▶ background.js �
   whichever page you debug, and the request runner and flows must reach whichever API you
   point them at.
 - `storage`, `unlimitedStorage` — settings, API key, flows and run history
-  (`chrome.storage.local`), chat per tab (`chrome.storage.session`). The capture log and flow
-  collections, checkpoints and memory live in the extension's IndexedDB, which
-  `unlimitedStorage` lets grow past the default quota.
+  (`chrome.storage.local`); which conversation each tab has open (`chrome.storage.session`).
+  The capture log, conversations, docs, and flow collections, checkpoints and memory live in
+  the extension's IndexedDB, which `unlimitedStorage` lets grow past the default quota.
 - `alarms` — flow schedules.
 - `scripting` — injects the capture hook into tabs that were open before installing, and runs
   "send from the page" requests inside the site's tab.

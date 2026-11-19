@@ -11,6 +11,7 @@
 
   if (window.__netscopeAi) window.__netscopeAi.attach(api);
   if (window.__netscopeFlowsUi) window.__netscopeFlowsUi.attach(api);
+  if (window.__netscopeDocsUi) window.__netscopeDocsUi.attach(api);
   connect();
 
   // Ask the content script for the current popup mode (pill / panel / large).

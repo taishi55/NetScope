@@ -1737,6 +1737,250 @@ mark {
   margin: 0 0 4px;
 }
 
+/* ---------------------------------------------------- process accordion */
+
+.run {
+  border-left: 2px solid var(--line);
+  padding-left: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.run.done {
+  border-left-color: transparent;
+  padding-left: 0;
+}
+
+.run-head {
+  align-self: flex-start;
+  border: 0;
+  background: transparent;
+  padding: 2px 0;
+  color: var(--ink-3);
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 6px;
+}
+
+.run-head:hover {
+  background: transparent;
+  color: var(--ink);
+}
+
+.run.done .run-head {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  padding: 2px 9px;
+  border-radius: 999px;
+}
+
+.run-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.run.done .run-body:not([hidden]) {
+  border-left: 2px solid var(--line);
+  padding-left: 8px;
+}
+
+/* user message actions */
+.user-tools {
+  justify-content: flex-end;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+
+.msg-user:hover .user-tools,
+.msg-user:focus-within .user-tools {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .user-tools {
+    opacity: 1;
+  }
+}
+
+.user-edit {
+  width: 88%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.user-edit textarea {
+  width: 100%;
+  resize: vertical;
+  border-radius: 10px;
+}
+
+.user-edit .actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+/* history */
+#historySearch {
+  width: 100%;
+}
+
+.history-list {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.history-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 2px 4px 2px 2px;
+}
+
+.history-item.current {
+  border-color: var(--signal);
+}
+
+.history-open {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 8px;
+}
+
+.history-title,
+.doc-title {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.history-meta,
+.doc-meta {
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+
+.history-del {
+  font-size: 12px;
+  flex: none;
+}
+
+.data-pick {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* docs */
+#view-docs {
+  overflow-y: auto;
+}
+
+#docsRoot {
+  padding: 14px 14px 20px;
+}
+
+.docs-head p {
+  margin: 0 0 10px;
+  color: var(--ink-2);
+  max-width: 60ch;
+}
+
+.docs-head .actions,
+.doc-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.doc-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.doc-open {
+  width: 100%;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.doc-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.doc-h {
+  margin: 0;
+  font-size: 16px;
+  letter-spacing: -0.01em;
+}
+
+.doc-view > .doc-meta {
+  margin: 2px 0 10px 34px;
+}
+
+.doc-body {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+
+.doc-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.doc-edit h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.doc-edit textarea {
+  min-height: 360px;
+  font-family: var(--mono);
+  font-size: 12px;
+  resize: vertical;
+}
+
+.doc-edit .actions {
+  display: flex;
+  gap: 6px;
+}
+
 /* ------------------------------------------------------------- settings */
 
 .sheet {

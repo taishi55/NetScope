@@ -15,6 +15,9 @@ Paste a cURL into the chat and Kimi runs it and explains the response, or ask it
 AUTOMATE FLOWS AND BUILD SMALL BOTS
 Describe it — "whenever this page loads orders, post each new paid one to my webhook, never the same one twice" — and Kimi builds it from requests the page already made, runs it once to prove it works, then turns it on. Flows go beyond a sequence of calls: filter results, loop over them, page through APIs, branch with if/else, remember what was handled between runs, call Kimi mid-flow, and run on a schedule or whenever the page makes a matching request. Big jobs are built in: flatten and de-duplicate paged results, enrich them with up to 10 parallel requests that back off on 429s, keep results in collections you can export as CSV or JSON, and let long runs pause and resume by themselves. Endpoints that reject replays (WAF, anti-bot, CSRF) can be called from inside the page itself. Copy any flow as a Markdown document with secrets masked.
 
+CONVERSATIONS AND DOCS THAT STAY
+Every conversation is kept and searchable in History; edit or retry any earlier question. Each answer's working steps fold into one line you can expand. Kimi keeps markdown docs of what it learns about an API — endpoints, auth, quirks — and you can export everything (conversations, flows, docs) to move to another browser.
+
 KEEP LOGS ON RELOAD
 One switch keeps the captured traffic — and your conversation — across page reloads and navigations.
 

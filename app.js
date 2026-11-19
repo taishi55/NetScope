@@ -247,6 +247,8 @@ function onPortMessage(msg) {
     case "flows-changed":
     case "flow-progress":
     case "flow-step":
+    case "docs-changed":
+    case "chats-changed":
       emit(msg.type, msg);
       break;
     case "rpc-result": {
@@ -343,6 +345,7 @@ function switchView(view) {
   if (view === "traffic") scheduleRefresh();
   if (view === "chat") setTimeout(() => $("aiInput").focus(), 0);
   if (window.__netscopeFlowsUi && view === "flows") window.__netscopeFlowsUi.onShown();
+  if (window.__netscopeDocsUi && view === "docs") window.__netscopeDocsUi.onShown();
 }
 
 /* ------------------------------------------------------------- trace */
@@ -1347,6 +1350,29 @@ function wireUi() {
       ev.preventDefault();
       ui.search.focus();
       ui.search.select();
+    }
+  });
+
+  // An open sheet (Settings, History) is a modal dialog: keep Tab inside it.
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key !== "Tab") return;
+    const sheet = document.querySelector(".sheet:not([hidden])");
+    if (!sheet) return;
+    const focusable = Array.from(sheet.querySelectorAll("button, input, select, textarea, a[href], [tabindex]:not([tabindex='-1'])")).filter(
+      (n) => !n.disabled && !n.hidden && n.offsetParent !== null
+    );
+    if (!focusable.length) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (!sheet.contains(document.activeElement)) {
+      ev.preventDefault();
+      first.focus();
+    } else if (ev.shiftKey && document.activeElement === first) {
+      ev.preventDefault();
+      last.focus();
+    } else if (!ev.shiftKey && document.activeElement === last) {
+      ev.preventDefault();
+      first.focus();
     }
   });
 

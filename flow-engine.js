@@ -1834,6 +1834,7 @@ globalThis.__netscopeFlows = (() => {
     getCheckpoint,
     getCheckpointRaw,
     markCheckpoint,
+    KV, // shared with background.js for conversations and docs
     setCheckpoint,
     check,
     analyze,

@@ -77,6 +77,9 @@
         <button role="tab" id="tab-flows" data-view="flows" aria-selected="false" aria-controls="view-flows">
           Flows <span class="count" id="flowsCount"></span>
         </button>
+        <button role="tab" id="tab-docs" data-view="docs" aria-selected="false" aria-controls="view-docs">
+          Docs <span class="count" id="docsCount"></span>
+        </button>
         <span class="spacer"></span>
         <label class="switch" title="Keep captured requests when this page reloads or navigates">
           <input type="checkbox" id="preserve" role="switch" />
@@ -123,6 +126,7 @@
               </select>
               <span id="aiCtx" class="meter"></span>
               <span class="spacer"></span>
+              <button type="button" id="aiHistory" class="ghost" title="Earlier conversations">History</button>
               <button type="button" id="aiNewChat" class="ghost" title="Start a new chat">New chat</button>
               <button id="aiSend" class="primary" type="submit">Send</button>
               <button id="aiStop" type="button" class="danger" hidden>Stop</button>
@@ -216,6 +220,11 @@
           <div id="flowList"></div>
           <div id="flowEditor" hidden></div>
         </section>
+
+        <!-- ============================================================ Docs -->
+        <section id="view-docs" class="view" role="tabpanel" aria-labelledby="tab-docs">
+          <div id="docsRoot"></div>
+        </section>
       </main>
 
       <!-- ======================================================== Settings -->
@@ -280,8 +289,41 @@
             <button id="aiForget" type="button" class="ghost">Forget key</button>
           </div>
 
+          <h4>Your data</h4>
+          <p class="hint">
+            Move NetScope to another browser: export here, then import the file in NetScope there.
+            The file holds your conversations and flows, which can include captured tokens and
+            personal data — keep it private.
+          </p>
+          <div class="data-pick" role="group" aria-label="What to export">
+            <label class="chk"><input type="checkbox" id="dataChats" checked /> Conversations</label>
+            <label class="chk"><input type="checkbox" id="dataFlows" checked /> Flows, with their memory and collections</label>
+            <label class="chk"><input type="checkbox" id="dataDocs" checked /> Docs</label>
+            <label class="chk"><input type="checkbox" id="dataSettings" checked /> Settings</label>
+            <label class="chk sub"><input type="checkbox" id="dataKey" /> Include the Kimi API key</label>
+          </div>
+          <div class="actions">
+            <button id="dataExport" type="button">Export…</button>
+            <button id="dataImport" type="button">Import…</button>
+            <input id="dataFile" type="file" accept="application/json,.json" hidden />
+          </div>
+
           <h4>Shortcut</h4>
           <p class="hint">Alt+Shift+N opens or hides NetScope on the current page. Change it at chrome://extensions/shortcuts.</p>
+        </div>
+      </div>
+
+      <!-- ===================================================== History -->
+      <div id="history" class="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="historyTitle">
+        <div class="sheet-head">
+          <h3 id="historyTitle">Conversations</h3>
+          <button id="historyClose" class="icon" type="button" title="Close" aria-label="Close conversations">
+            <svg><use href="#i-close" /></svg>
+          </button>
+        </div>
+        <div class="sheet-body">
+          <input id="historySearch" type="search" placeholder="Search by title or site" aria-label="Search conversations" autocomplete="off" />
+          <ul id="historyList" class="history-list"></ul>
         </div>
       </div>
     </div>
@@ -295,6 +337,7 @@
     <script src="app.js"></script>
     <script src="ai-panel.js"></script>
     <script src="flows-ui.js"></script>
+    <script src="docs-ui.js"></script>
     <script src="boot.js"></script>
   </body>
 </html>

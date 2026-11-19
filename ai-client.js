@@ -25,7 +25,10 @@ globalThis.__netscopeAiClient = (() => {
   const BASE = "https://api.moonshot.ai/v1";
   const ENDPOINT = BASE + "/chat/completions";
   const STORE_KEY = "netscope.ai";
-  const REQUEST_TIMEOUT = 180000;
+  // A thinking turn can legitimately take minutes, so the limit is on
+  // silence, not length: no bytes for IDLE_TIMEOUT means the stream is dead.
+  const REQUEST_TIMEOUT = 900000; // hard cap per call
+  const IDLE_TIMEOUT = 180000; // no data at all for this long while streaming
 
   const MODELS = [
     { id: "kimi-k3.1-pro", label: "Kimi K3.1 Pro", note: "Newest, strongest reasoning" },
@@ -220,21 +223,49 @@ globalThis.__netscopeAiClient = (() => {
   }
 
   // Aborts on whichever comes first: the caller cancelling, or the timeout.
-  function linkAbort(outer, ms) {
+  // Aborts on the caller cancelling, the hard cap, or (when idleMs is set) a
+  // silent stream. Timeouts are recorded in `timedOut`, so they are never
+  // mistaken for the user pressing Stop.
+  function linkAbort(outer, ms, idleMs) {
     const ctl = new AbortController();
+    const link = { signal: ctl.signal, timedOut: null };
     const onAbort = () => ctl.abort();
     if (outer) {
       if (outer.aborted) ctl.abort();
       else outer.addEventListener("abort", onAbort, { once: true });
     }
-    const timer = setTimeout(() => ctl.abort(), ms);
-    return {
-      signal: ctl.signal,
-      release() {
-        clearTimeout(timer);
-        if (outer) outer.removeEventListener("abort", onAbort);
-      }
+    const timer = setTimeout(() => {
+      link.timedOut = "total";
+      ctl.abort();
+    }, ms);
+    let idle = 0;
+    const fireIdle = () => {
+      link.timedOut = "idle";
+      ctl.abort();
     };
+    if (idleMs) idle = setTimeout(fireIdle, idleMs);
+    link.touch = () => {
+      if (!idleMs) return;
+      clearTimeout(idle);
+      idle = setTimeout(fireIdle, idleMs);
+    };
+    link.release = () => {
+      clearTimeout(timer);
+      clearTimeout(idle);
+      if (outer) outer.removeEventListener("abort", onAbort);
+    };
+    return link;
+  }
+
+  function timeoutError(kind) {
+    const err = new Error(
+      kind === "idle"
+        ? `Kimi stopped sending data for ${Math.round(IDLE_TIMEOUT / 60000)} minutes.`
+        : `Kimi's reply took longer than ${Math.round(REQUEST_TIMEOUT / 60000)} minutes.`
+    );
+    err.retryable = true;
+    err.timeout = true;
+    return err;
   }
 
   /* ---------------------------------------------------------- response */
@@ -254,7 +285,7 @@ globalThis.__netscopeAiClient = (() => {
       .filter((tc) => tc.id && tc.function.name);
   }
 
-  async function readStream(res, onDelta, markStreamed, onReasoning) {
+  async function readStream(res, onDelta, markStreamed, onReasoning, touch) {
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     const byIndex = new Map();
@@ -266,6 +297,7 @@ globalThis.__netscopeAiClient = (() => {
 
     for (;;) {
       const { done, value } = await reader.read();
+      if (touch) touch();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
 
@@ -321,7 +353,19 @@ globalThis.__netscopeAiClient = (() => {
       }
     }
 
-    return normalize(text, collectToolCalls(byIndex), finishReason, usage, reasoning);
+    // No finish_reason means the stream was cut off. With nothing usable that
+    // is an error worth retrying; with partial output, the caller decides.
+    const calls = collectToolCalls(byIndex);
+    if (!finishReason) {
+      if (!text && !calls.length) {
+        const err = new Error("Kimi's response ended before it said anything.");
+        err.retryable = true;
+        err.incomplete = true;
+        throw err;
+      }
+      finishReason = "incomplete";
+    }
+    return normalize(text, calls, finishReason, usage, reasoning);
   }
 
   function readWhole(json) {
@@ -334,7 +378,7 @@ globalThis.__netscopeAiClient = (() => {
   /* ----------------------------------------------------------- request */
 
   async function attempt(body, opts, markStreamed) {
-    const link = linkAbort(opts.signal, REQUEST_TIMEOUT);
+    const link = linkAbort(opts.signal, REQUEST_TIMEOUT, body.stream ? IDLE_TIMEOUT : 0);
     let res;
     try {
       res = await fetch(ENDPOINT, {
@@ -348,14 +392,23 @@ globalThis.__netscopeAiClient = (() => {
       });
     } catch (err) {
       link.release();
-      if (err && err.name === "AbortError") throw err;
+      if (err && err.name === "AbortError") throw link.timedOut ? timeoutError(link.timedOut) : err;
       throw networkError(err);
     }
 
     try {
       if (!res.ok) throw await httpError(res);
-      if (body.stream && res.body) return await readStream(res, opts.onDelta, markStreamed, opts.onReasoning);
+      if (body.stream && res.body) return await readStream(res, opts.onDelta, markStreamed, opts.onReasoning, link.touch);
       return readWhole(await res.json());
+    } catch (err) {
+      if (err && err.name === "AbortError") throw link.timedOut ? timeoutError(link.timedOut) : err;
+      // A connection dropped mid-stream surfaces as a TypeError from read().
+      if (err && !err.status && !err.retryable && !err.incomplete) {
+        const e = networkError(err);
+        e.message = "The connection to Kimi dropped mid-answer.";
+        throw e;
+      }
+      throw err;
     } finally {
       link.release();
     }

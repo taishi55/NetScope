@@ -781,6 +781,167 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   } catch (_) {}
 })();
 
+/* ------------------------------------------------- conversations & docs */
+
+// Kept in the same IndexedDB key-value store as flow data: they outlive the
+// browser session, never flood storage.onChanged, and export/import sees them.
+const KV = Flows.KV;
+const CHAT_INDEX = "netscope.chatIndex";
+const DOC_INDEX = "netscope.docIndex";
+const chatKey = (id) => "netscope.chat." + id;
+const docKey = (id) => "netscope.doc." + id;
+let indexQ = Promise.resolve();
+const inIndexQueue = (fn) => {
+  const p = indexQ.then(fn);
+  indexQ = p.catch(() => {});
+  return p;
+};
+const newDataId = (prefix) => prefix + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+
+async function readIndex(key) {
+  const got = await KV.get(key);
+  return Array.isArray(got[key]) ? got[key] : [];
+}
+
+function upsertIndex(key, entry) {
+  return inIndexQueue(async () => {
+    const list = (await readIndex(key)).filter((x) => x.id !== entry.id);
+    list.push(entry);
+    list.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    await KV.set({ [key]: list });
+  });
+}
+
+function dropFromIndex(key, id) {
+  return inIndexQueue(async () => {
+    const list = (await readIndex(key)).filter((x) => x.id !== id);
+    await KV.set({ [key]: list });
+  });
+}
+
+async function saveChat(c) {
+  if (!c || !c.id) throw new Error("chat needs an id");
+  const now = Date.now();
+  const chat = Object.assign({}, c, { updatedAt: c.updatedAt || now, createdAt: c.createdAt || now });
+  await KV.set({ [chatKey(chat.id)]: chat });
+  const users = (chat.transcript || []).filter((x) => x.t === "user").length;
+  await upsertIndex(CHAT_INDEX, {
+    id: chat.id,
+    title: chat.title || "New chat",
+    createdAt: chat.createdAt,
+    updatedAt: chat.updatedAt,
+    site: chat.page && chat.page.url ? (() => { try { return new URL(chat.page.url).host; } catch (_) { return ""; } })() : "",
+    questions: users
+  });
+  return { id: chat.id, updatedAt: chat.updatedAt };
+}
+
+async function saveDoc(d, by) {
+  const now = Date.now();
+  const existing = d.id ? (await KV.get(docKey(d.id)))[docKey(d.id)] : null;
+  const doc = Object.assign({}, existing || {}, d, {
+    id: d.id || newDataId("doc_"),
+    title: String(d.title || (existing && existing.title) || "Untitled").slice(0, 200),
+    content: String(d.content != null ? d.content : (existing && existing.content) || ""),
+    createdAt: (existing && existing.createdAt) || d.createdAt || now,
+    updatedAt: d.updatedAt && !existing ? d.updatedAt : now,
+    updatedBy: by || d.updatedBy || "you"
+  });
+  if (doc.content.length > 2000000) throw new Error("doc is over 2 MB — split it into several docs");
+  await KV.set({ [docKey(doc.id)]: doc });
+  await upsertIndex(DOC_INDEX, { id: doc.id, title: doc.title, createdAt: doc.createdAt, updatedAt: doc.updatedAt, site: doc.site || "", size: doc.content.length, updatedBy: doc.updatedBy });
+  broadcastAll({ type: "docs-changed", id: doc.id });
+  return doc;
+}
+
+// One JSON file with everything a new browser needs. The API key is left
+// out unless asked for.
+async function exportData(opts) {
+  const o = Object.assign({ chats: true, flows: true, flowData: true, docs: true, settings: true, apiKey: false }, opts || {});
+  const out = { format: "netscope-backup", version: 1, exportedAt: new Date().toISOString(), counts: {} };
+  if (o.chats) {
+    const idx = await readIndex(CHAT_INDEX);
+    const got = idx.length ? await KV.get(idx.map((x) => chatKey(x.id))) : {};
+    out.chats = idx.map((x) => got[chatKey(x.id)]).filter(Boolean);
+    out.counts.chats = out.chats.length;
+  }
+  if (o.flows) {
+    out.flows = (await Flows.list()).map((f) => {
+      const c = Object.assign({}, f);
+      delete c.lastRun;
+      return c;
+    });
+    out.counts.flows = out.flows.length;
+    if (o.flowData) {
+      out.flowData = {};
+      for (const f of out.flows) {
+        const memory = await Flows.getState(f.id);
+        const collections = await Flows.getCollections(f.id);
+        if (Object.keys(memory).length || Object.keys(collections).length) out.flowData[f.id] = { memory, collections };
+      }
+    }
+  }
+  if (o.docs) {
+    const idx = await readIndex(DOC_INDEX);
+    const got = idx.length ? await KV.get(idx.map((x) => docKey(x.id))) : {};
+    out.docs = idx.map((x) => got[docKey(x.id)]).filter(Boolean);
+    out.counts.docs = out.docs.length;
+  }
+  if (o.settings) {
+    const s = Object.assign({}, await AI.loadSettings());
+    if (!o.apiKey) delete s.apiKey;
+    out.settings = s;
+  }
+  return out;
+}
+
+async function importData(data) {
+  if (!data || data.format !== "netscope-backup") throw new Error("This is not a NetScope backup file.");
+  const res = { chats: 0, flows: 0, docs: 0, settings: false, skipped: 0, errors: [] };
+  for (const c of Array.isArray(data.chats) ? data.chats : []) {
+    if (!c || !c.id) continue;
+    const cur = (await KV.get(chatKey(c.id)))[chatKey(c.id)];
+    if (cur && (cur.updatedAt || 0) >= (c.updatedAt || 0)) {
+      res.skipped++;
+      continue;
+    }
+    await saveChat(c);
+    res.chats++;
+  }
+  for (const f of Array.isArray(data.flows) ? data.flows : []) {
+    try {
+      const saved = await Flows.save(f);
+      res.flows++;
+      const fd = data.flowData && data.flowData[f.id];
+      if (fd) {
+        if (fd.memory && Object.keys(fd.memory).length) await Flows.setState(saved.id, fd.memory);
+        if (fd.collections && Object.keys(fd.collections).length) await Flows.setCollections(saved.id, fd.collections);
+      }
+    } catch (err) {
+      res.errors.push(`flow “${(f && f.name) || "?"}”: ${String(err.message || err).slice(0, 200)}`);
+    }
+  }
+  for (const d of Array.isArray(data.docs) ? data.docs : []) {
+    if (!d || !d.id) continue;
+    const cur = (await KV.get(docKey(d.id)))[docKey(d.id)];
+    if (cur && (cur.updatedAt || 0) >= (d.updatedAt || 0)) {
+      res.skipped++;
+      continue;
+    }
+    await saveDoc(Object.assign({}, d), d.updatedBy);
+    res.docs++;
+  }
+  if (data.settings && typeof data.settings === "object") {
+    const patch = Object.assign({}, data.settings);
+    if (!patch.apiKey) delete patch.apiKey; // never wipe the key already here
+    await AI.saveSettings(patch);
+    res.settings = true;
+  }
+  broadcastAll({ type: "chats-changed" });
+  broadcastAll({ type: "docs-changed" });
+  return res;
+}
+
 /* ----------------------------------------------------------------- rpc */
 
 async function handleRpc(tabId, method, p) {
@@ -844,6 +1005,36 @@ async function handleRpc(tabId, method, p) {
       await Flows.setCollections(p.id, all);
       return true;
     }
+    case "chats.list":
+      return readIndex(CHAT_INDEX);
+    case "chats.get":
+      return (await KV.get(chatKey(p.id)))[chatKey(p.id)] || null;
+    case "chats.save":
+      return saveChat(p.chat);
+    case "chats.delete":
+      await KV.remove(chatKey(p.id));
+      await dropFromIndex(CHAT_INDEX, p.id);
+      broadcastAll({ type: "chats-changed" });
+      return true;
+    case "docs.list":
+      return readIndex(DOC_INDEX);
+    case "docs.get": {
+      if (p.id) return (await KV.get(docKey(p.id)))[docKey(p.id)] || null;
+      // by title, case-insensitive (Kimi often knows a doc by name)
+      const hit = (await readIndex(DOC_INDEX)).find((x) => String(x.title).toLowerCase() === String(p.title || "").toLowerCase());
+      return hit ? (await KV.get(docKey(hit.id)))[docKey(hit.id)] || null : null;
+    }
+    case "docs.save":
+      return saveDoc(p.doc || {}, p.by);
+    case "docs.delete":
+      await KV.remove(docKey(p.id));
+      await dropFromIndex(DOC_INDEX, p.id);
+      broadcastAll({ type: "docs-changed", id: p.id, deleted: true });
+      return true;
+    case "data.export":
+      return exportData(p.options);
+    case "data.import":
+      return importData(p.data);
     case "flows.validate":
       return (({ valid, errors, warnings }) => ({ valid, errors, warnings }))(Flows.check(p.flow));
     case "flows.start": {

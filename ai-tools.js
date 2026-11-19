@@ -1552,6 +1552,108 @@ window.__netscopeAiTools = (() => {
     }
   }
 
+  /* ---------------------------------------------------------------- docs */
+
+  // Markdown documents Kimi keeps for the developer (Docs tab): findings,
+  // API maps, how a flow works. Stored locally; never sent anywhere else.
+  const siteOfPage = () => {
+    try {
+      return new URL(api.page().url).host;
+    } catch (_) {
+      return "";
+    }
+  };
+
+  async function findDoc(a) {
+    if (a.id) return api.rpc("docs.get", { id: a.id });
+    if (a.title) return api.rpc("docs.get", { title: a.title });
+    return null;
+  }
+
+  async function toolListDocs(args) {
+    try {
+      const a = args || {};
+      let list = await api.rpc("docs.list");
+      if (a.site) list = list.filter((d) => d.site === a.site);
+      return capResult(
+        {
+          total: list.length,
+          docs: list.slice(0, 100).map((d) => ({ id: d.id, title: d.title, site: d.site || undefined, chars: d.size, updated: new Date(d.updatedAt).toISOString(), by: d.updatedBy }))
+        },
+        8000
+      );
+    } catch (err) {
+      return JSON.stringify({ error: String(err.message || err) });
+    }
+  }
+
+  async function toolReadDoc(args) {
+    const a = args || {};
+    try {
+      const d = await findDoc(a);
+      if (!d) return JSON.stringify({ error: "no such doc — list_docs shows what exists" });
+      const offset = Math.max(0, a.offset || 0);
+      const max = Math.min(Math.max(500, a.max_chars || 12000), 20000);
+      return capResult({ id: d.id, title: d.title, site: d.site || undefined, total_chars: d.content.length, offset, content: d.content.slice(offset, offset + max), more: offset + max < d.content.length }, 24000);
+    } catch (err) {
+      return JSON.stringify({ error: String(err.message || err) });
+    }
+  }
+
+  async function toolWriteDoc(args) {
+    const a = args || {};
+    try {
+      const existing = a.id || (a.title && a.mode !== "create") ? await findDoc(a) : null;
+      if (a.id && !existing) return JSON.stringify({ error: `no doc with id ${a.id}` });
+      const mode = a.mode || "replace";
+      let content = String(a.content || "");
+      if (existing && mode === "append") content = existing.content.replace(/\s*$/, "") + "\n\n" + content;
+      const doc = await api.rpc("docs.save", {
+        by: "kimi",
+        doc: { id: existing ? existing.id : undefined, title: a.title || (existing && existing.title) || "Findings", content, site: existing ? existing.site : siteOfPage() }
+      });
+      return JSON.stringify({ saved: true, id: doc.id, title: doc.title, chars: doc.content.length, created: !existing });
+    } catch (err) {
+      return JSON.stringify({ error: String(err.message || err) });
+    }
+  }
+
+  async function toolEditDoc(args) {
+    const a = args || {};
+    try {
+      const d = await findDoc(a);
+      if (!d) return JSON.stringify({ error: "no such doc — list_docs shows what exists" });
+      const edits = Array.isArray(a.edits) ? a.edits : a.find != null ? [{ find: a.find, replace: a.replace, all: a.all }] : [];
+      if (!edits.length) return JSON.stringify({ error: "give edits: [{find, replace}]" });
+      let content = d.content;
+      const report = [];
+      for (const e of edits) {
+        const find = String(e.find || "");
+        if (!find) return JSON.stringify({ error: "every edit needs non-empty find text" });
+        const n = content.split(find).length - 1;
+        if (!n) return JSON.stringify({ error: `text not found: "${find.slice(0, 80)}" — read_doc to see the current text`, applied: report });
+        if (n > 1 && !e.all) return JSON.stringify({ error: `"${find.slice(0, 80)}" appears ${n} times — add more context, or set all: true`, applied: report });
+        content = e.all ? content.split(find).join(String(e.replace || "")) : content.replace(find, () => String(e.replace || ""));
+        report.push({ find: find.slice(0, 60), replaced: e.all ? n : 1 });
+      }
+      const doc = await api.rpc("docs.save", { by: "kimi", doc: { id: d.id, content, title: a.title || d.title } });
+      return JSON.stringify({ saved: true, id: doc.id, title: doc.title, chars: doc.content.length, edits: report });
+    } catch (err) {
+      return JSON.stringify({ error: String(err.message || err) });
+    }
+  }
+
+  async function toolDeleteDoc(args) {
+    try {
+      const d = await findDoc(args || {});
+      if (!d) return JSON.stringify({ error: "no such doc" });
+      await api.rpc("docs.delete", { id: d.id });
+      return JSON.stringify({ deleted: true, title: d.title });
+    } catch (err) {
+      return JSON.stringify({ error: String(err.message || err) });
+    }
+  }
+
   async function toolDeleteFlow(args) {
     try {
       const ok = await api.rpc("flows.delete", { id: (args || {}).id });
@@ -1641,6 +1743,13 @@ window.__netscopeAiTools = (() => {
       if (!f) return null;
       if (policy === "writes" && !flowHasWrites(f.steps)) return null;
       return { kind: "flow-run", title: `Kimi wants to run the flow “${f.name}”`, flow: f };
+    }
+    if (name === "delete_doc") {
+      let d = null;
+      try {
+        d = await findDoc(a);
+      } catch (_) {}
+      return { kind: "doc-delete", title: `Kimi wants to delete the doc “${d ? d.title : a.id || a.title}”` };
     }
     if (name === "delete_flow") {
       let f = null;
@@ -1958,6 +2067,78 @@ window.__netscopeAiTools = (() => {
     {
       type: "function",
       function: {
+        name: "list_docs",
+        description: "The developer's saved docs (Docs tab): markdown notes such as API maps, findings and how flows work. Check here before writing, and update the existing doc for a site instead of creating duplicates.",
+        parameters: { type: "object", properties: { site: { type: "string", description: "Only docs for this host." } }, additionalProperties: false }
+      }
+    },
+    {
+      type: "function",
+      function: {
+        name: "read_doc",
+        description: "Read a doc by id or exact title, paginated.",
+        parameters: {
+          type: "object",
+          properties: { id: { type: "string" }, title: { type: "string" }, offset: { type: "integer" }, max_chars: { type: "integer", description: "Default 12000, max 20000." } },
+          additionalProperties: false
+        }
+      }
+    },
+    {
+      type: "function",
+      function: {
+        name: "write_doc",
+        description:
+          "Create or rewrite a markdown doc to keep findings for the developer (endpoints, auth, quirks, failures and their causes, flows built and how to run them). Pass id (or the exact title of an existing doc) to update it; mode replace (default) rewrites, append adds to the end. Use # headings, - bullets and ``` code fences.",
+        parameters: {
+          type: "object",
+          properties: {
+            id: { type: "string" },
+            title: { type: "string" },
+            content: { type: "string" },
+            mode: { type: "string", enum: ["replace", "append", "create"], description: "create always makes a new doc even if the title exists." }
+          },
+          required: ["content"],
+          additionalProperties: false
+        }
+      }
+    },
+    {
+      type: "function",
+      function: {
+        name: "edit_doc",
+        description: "Change part of a doc without rewriting it: each edit replaces an exact piece of text (it must appear once unless all: true). read_doc first to copy the exact text.",
+        parameters: {
+          type: "object",
+          properties: {
+            id: { type: "string" },
+            title: { type: "string" },
+            edits: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: { find: { type: "string" }, replace: { type: "string" }, all: { type: "boolean" } },
+                required: ["find", "replace"],
+                additionalProperties: false
+              }
+            }
+          },
+          required: ["edits"],
+          additionalProperties: false
+        }
+      }
+    },
+    {
+      type: "function",
+      function: {
+        name: "delete_doc",
+        description: "Delete a doc by id or exact title.",
+        parameters: { type: "object", properties: { id: { type: "string" }, title: { type: "string" } }, additionalProperties: false }
+      }
+    },
+    {
+      type: "function",
+      function: {
         name: "get_collection",
         description: "Read items from a flow's persistent collection (built by collect steps), paginated. Use fields to return only some keys.",
         parameters: {
@@ -2008,12 +2189,31 @@ window.__netscopeAiTools = (() => {
     get_flow: toolGetFlow,
     get_collection: toolGetCollection,
     validate_flow: toolValidateFlow,
+    list_docs: toolListDocs,
+    read_doc: toolReadDoc,
+    write_doc: toolWriteDoc,
+    edit_doc: toolEditDoc,
+    delete_doc: toolDeleteDoc,
     delete_flow: toolDeleteFlow
   };
 
   // Tools whose results come from the network, not the capture: their output
   // does not count against the per-run capture budget.
-  const UNBUDGETED = new Set(["http_request", "save_flow", "validate_flow", "run_flow", "list_flows", "get_flow", "get_collection", "delete_flow"]);
+  const UNBUDGETED = new Set([
+    "http_request",
+    "save_flow",
+    "validate_flow",
+    "run_flow",
+    "list_flows",
+    "get_flow",
+    "get_collection",
+    "delete_flow",
+    "list_docs",
+    "read_doc",
+    "write_doc",
+    "edit_doc",
+    "delete_doc"
+  ]);
 
   // Never throws. Every failure becomes a tool result the model can react to,
   // because an exception here would abort the whole run.

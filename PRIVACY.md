@@ -1,6 +1,6 @@
 # NetScope — Privacy Policy
 
-**Last updated: November 18, 2026**
+**Last updated: November 19, 2026**
 
 ## Summary
 
@@ -29,7 +29,11 @@ Where it is kept:
   starts a fresh log unless you turn on **Keep logs on reload**. A tab's log is deleted when
   the tab closes, and the whole database is wiped each time the browser starts. Each tab keeps
   at most the last 3,000 entries.
-- **Chat** — per tab in `chrome.storage.session`, which Chrome clears when the browser closes.
+- **Conversations** — every chat, including the traffic excerpts and tool results it contains,
+  in the extension's IndexedDB until you delete it from History.
+- **Docs** — markdown notes Kimi or you write in the Docs tab, in the extension's IndexedDB
+  until you delete them. Kimi is told never to put tokens or cookies in docs, but a doc holds
+  whatever was written into it.
 - **Flows and run history** — in `chrome.storage.local`; **flow memory, collections and
   checkpoints** — in the extension's IndexedDB. All stay until you delete them. Collections hold whatever data a flow's `collect` steps save from API responses
   (up to 100,000 items each); clear or export them from the flow card. A paused run keeps a
@@ -39,6 +43,13 @@ Where it is kept:
 - **Settings and API key** — in `chrome.storage.local` (below).
 
 Nothing is written outside your Chrome profile. No `chrome.debugger` is used.
+
+## Export and import
+
+Settings → Your data → Export saves a JSON file through your browser's normal download: your
+conversations, flows with their memory and collections, docs and settings. The API key is
+included only if you tick that box. The file can contain captured tokens and personal data;
+NetScope never sends it anywhere. Import reads a file you choose and merges it in locally.
 
 ## Kimi (optional AI assistant)
 

@@ -128,6 +128,13 @@ window.__netscopeAiAgent = (() => {
       "  Only then say it is scheduled.",
       "- \"Every hour\" is every_minutes 60. Mention that schedules and triggers run while the browser is open.",
       "",
+      "Keeping docs:",
+      "- The developer has a Docs tab of markdown notes you can manage with list_docs, read_doc, write_doc,",
+      "  edit_doc and delete_doc. After a substantial investigation, a working request recipe, or a flow you",
+      "  built, record what you found (endpoints, auth, parameters, quirks, causes of failures, how to run the",
+      "  flow). list_docs first and update the doc for this site rather than creating a new one each time;",
+      "  prefer edit_doc for small changes. Say which doc you wrote. Never put secrets (tokens, cookies) in docs.",
+      "",
       "Answering:",
       "- Concise and technical; the reader is a developer.",
       "- Short sections and \"- \" bullets. No tables, no emojis. ``` fences for code, JSON and cURL.",
@@ -348,6 +355,96 @@ window.__netscopeAiAgent = (() => {
     return out;
   }
 
+  // Every assistant tool call needs a tool reply before the next request, or
+  // Moonshot rejects the whole history. A run cut off mid-tool (page reload,
+  // crash) can leave calls unanswered: answer them as "interrupted".
+  function repairTail() {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.role !== "assistant" || !Array.isArray(m.tool_calls) || !m.tool_calls.length) continue;
+      const answered = new Set();
+      let j = i + 1;
+      while (j < messages.length && messages[j].role === "tool") answered.add(messages[j++].tool_call_id);
+      const missing = m.tool_calls.filter((c) => !answered.has(c.id));
+      if (missing.length) {
+        messages.splice(
+          j,
+          0,
+          ...missing.map((c) => ({
+            role: "tool",
+            tool_call_id: c.id,
+            name: c.function && c.function.name,
+            content: JSON.stringify({ error: "interrupted before this tool ran — call it again if it is still needed" })
+          }))
+        );
+      }
+      return;
+    }
+  }
+
+  const sleep = (ms, signal) =>
+    new Promise((resolve, reject) => {
+      const t = setTimeout(resolve, ms);
+      if (signal)
+        signal.addEventListener(
+          "abort",
+          () => {
+            clearTimeout(t);
+            reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+          },
+          { once: true }
+        );
+    });
+
+  const argsBroken = (calls) =>
+    calls.some((c) => {
+      try {
+        JSON.parse(c.function.arguments || "{}");
+        return false;
+      } catch (_) {
+        return true;
+      }
+    });
+
+  // One model turn that does not give up on the first hiccup: a dropped or
+  // stalled stream, a turn cut off by the reply cap with nothing usable, or an
+  // empty reply is redone (the partial text is cleared from the screen first).
+  async function robustTurn(state, h, req, budget) {
+    const client = C();
+    for (let attempt = 0; ; attempt++) {
+      h.onAssistantStart();
+      let turn;
+      try {
+        turn = await client.chat(Object.assign({}, req, { max_completion_tokens: budget.cap }));
+      } catch (err) {
+        if (err && err.name === "AbortError") throw err; // the user pressed Stop
+        const retryable = err && (err.retryable || err.timeout || err.incomplete);
+        if (!retryable || attempt >= 2 || state.cancelled) throw err;
+        if (h.onTurnReset) h.onTurnReset();
+        h.onStatus(`${err.message} Retrying this step (${attempt + 1}/2)…`);
+        await sleep(2000 * (attempt + 1), state.controller.signal);
+        continue;
+      }
+      const text = (turn.assistantMessage.content || "").trim();
+      const cut = turn.finishReason === "length" || turn.finishReason === "incomplete";
+      const unusable = (!text && !turn.toolCalls.length) || (turn.toolCalls.length && argsBroken(turn.toolCalls));
+      if (unusable && attempt < 3 && !state.cancelled) {
+        // Cut off while thinking or mid-tool-call: give it more room and redo.
+        if (cut && budget.cap < 65536) {
+          const was = budget.cap;
+          budget.cap = Math.min(65536, budget.cap * 2);
+          if (h.onNotice) h.onNotice(`Kimi ran out of room at ${was.toLocaleString()} tokens; redoing the step with ${budget.cap.toLocaleString()}.`);
+        }
+        if (h.onTurnReset) h.onTurnReset();
+        h.onStatus(cut ? "Reply was cut off — redoing this step…" : "Empty reply — asking again…");
+        continue;
+      }
+      return turn;
+    }
+  }
+
+  // spec.kind "continue": pick the conversation up where it stopped, with no
+  // new question (after an error, a Stop, or a reload mid-answer).
   async function run(spec, h) {
     cancel();
 
@@ -359,14 +456,21 @@ window.__netscopeAiAgent = (() => {
       return;
     }
 
-    let seed;
-    try {
-      seed = await buildSeed(spec);
-    } catch (err) {
-      seed = null;
-    }
-    if (!seed || !seed.text) {
-      h.onError(new Error("That entry is no longer in the capture."), null);
+    const resuming = spec.kind === "continue";
+    let seed = null;
+    if (!resuming) {
+      try {
+        seed = await buildSeed(spec);
+      } catch (err) {
+        seed = null;
+      }
+      if (!seed || !seed.text) {
+        h.onError(new Error("That entry is no longer in the capture."), null);
+        h.onDone("error");
+        return;
+      }
+    } else if (messages.length < 2) {
+      h.onError(new Error("There is nothing to continue yet — ask a question first."), null);
       h.onDone("error");
       return;
     }
@@ -375,19 +479,31 @@ window.__netscopeAiAgent = (() => {
     currentRun = state;
 
     if (!messages.length) messages.push({ role: "system", content: systemPrompt() });
-    const snap = await snapshotText();
-    messages.push({ role: "user", content: seed.text + (snap ? "\n\n" + snap : "") });
-    h.onUserMessage(seed.display || seed.text);
+    repairTail();
+    if (resuming) {
+      const last = messages[messages.length - 1];
+      // Kimi had already answered: ask it to carry on from its last words.
+      if (last.role === "assistant" && !(last.tool_calls && last.tool_calls.length)) {
+        messages.push({ role: "user", content: "Continue exactly where you stopped. Do not repeat what you already wrote." });
+      }
+      if (h.onNotice) h.onNotice("Continuing where Kimi stopped…");
+    } else {
+      const snap = await snapshotText();
+      messages.push({ role: "user", content: seed.text + (snap ? "\n\n" + snap : "") });
+      h.onUserMessage(seed.display || seed.text);
+    }
     pruneHistory();
 
     const maxIterations = Math.max(spec.maxIterations || 0, settings.maxIterations || C().DEFAULTS.maxIterations);
-    let replyCap = client.replyCap(settings, settings.reasoningEffort);
+    const budget = { cap: client.replyCap(settings, settings.reasoningEffort) };
     const onWait = (w) =>
       h.onStatus(`Waiting ${Math.max(1, Math.round(w.ms / 1000))} s to stay under your Kimi ${w.tier} limit (${REASON_TEXT[w.reason] || "rate limit"})…`);
     const onRetry = (err, n, max, ms) =>
       h.onStatus(`${err.message} Trying again in ${Math.max(1, Math.round(ms / 1000))} s (${n}/${max})…`);
+    const base = { signal: state.controller.signal, onDelta: h.onDelta, onReasoning: h.onReasoning, onWait, onRetry, reasoning_effort: settings.reasoningEffort };
     let finished = false;
     let reason = "complete";
+    let continuations = 0;
 
     try {
       for (let i = 0; i < maxIterations; i++) {
@@ -399,30 +515,26 @@ window.__netscopeAiAgent = (() => {
         if (i > 0) pruneHistory();
         h.onStatus(`thinking… (${i + 1}/${maxIterations})`);
 
-        h.onAssistantStart();
-        const turn = await client.chat({
-          messages,
-          tools: T().TOOLS,
-          tool_choice: i === 0 && spec.forceTool ? "required" : "auto",
-          reasoning_effort: settings.reasoningEffort,
-          signal: state.controller.signal,
-          onDelta: h.onDelta,
-          onReasoning: h.onReasoning,
-          onWait,
-          onRetry,
-          max_completion_tokens: replyCap
-        });
+        const turn = await robustTurn(
+          state,
+          h,
+          Object.assign({}, base, { messages, tools: T().TOOLS, tool_choice: i === 0 && spec.forceTool && !resuming ? "required" : "auto" }),
+          budget
+        );
         h.onAssistantEnd(turn.assistantMessage.content || "");
         if (turn.usage) h.onUsage(turn.usage);
-        if (turn.finishReason === "length" && replyCap < 65536) {
-          // Thinking used up the reply budget. Give the rest of this answer more.
-          const was = replyCap;
-          replyCap = Math.min(65536, replyCap * 2);
-          if (h.onNotice) h.onNotice(`Kimi's reply hit the ${was.toLocaleString()}-token cap; using ${replyCap.toLocaleString()} for the rest of this answer. Set “Max reply length” in Settings to change the default.`);
-        }
 
         messages.push(turn.assistantMessage);
         if (!turn.toolCalls.length) {
+          // The answer itself was cut off: let Kimi finish the sentence.
+          const cut = turn.finishReason === "length" || turn.finishReason === "incomplete";
+          if (cut && continuations < 3 && (turn.assistantMessage.content || "").trim()) {
+            continuations++;
+            messages.push({ role: "user", content: "Your reply was cut off. Continue exactly where you stopped, without repeating anything." });
+            if (h.onContinueAnswer) h.onContinueAnswer(); // the next text joins this answer
+            else if (h.onNotice) h.onNotice("The answer was cut off — Kimi is finishing it…");
+            continue;
+          }
           finished = true;
           break;
         }
@@ -430,9 +542,7 @@ window.__netscopeAiAgent = (() => {
         // Every tool_call_id needs a reply, including after cancellation —
         // an unanswered call would make the next request 400.
         for (const call of turn.toolCalls) {
-          const out = state.cancelled
-            ? JSON.stringify({ error: "run cancelled by the user" })
-            : await execCall(call, state, h);
+          const out = state.cancelled ? JSON.stringify({ error: "run cancelled by the user" }) : await execCall(call, state, h);
           messages.push({ role: "tool", tool_call_id: call.id, name: call.function.name, content: out });
         }
 
@@ -449,31 +559,22 @@ window.__netscopeAiAgent = (() => {
         h.onStatus("wrapping up…");
         messages.push({
           role: "user",
-          content:
-            "Tool budget reached. Answer now with what you have, and state explicitly what you could not verify."
+          content: "Tool budget reached. Answer now with what you have, and state explicitly what you could not verify."
         });
-        h.onAssistantStart();
-        const final = await client.chat({
-          messages,
-          reasoning_effort: settings.reasoningEffort,
-          signal: state.controller.signal,
-          onDelta: h.onDelta,
-          onReasoning: h.onReasoning,
-          onWait,
-          onRetry,
-          max_completion_tokens: replyCap
-        });
+        const final = await robustTurn(state, h, Object.assign({}, base, { messages }), budget);
         h.onAssistantEnd(final.assistantMessage.content || "");
         if (final.usage) h.onUsage(final.usage);
         messages.push(final.assistantMessage);
       }
     } catch (err) {
       currentRun = null;
+      repairTail();
       if (err && err.name === "AbortError") {
         h.onDone("cancelled");
         return;
       }
-      h.onError(err, spec);
+      // The conversation is intact up to the failure: offer to continue it.
+      h.onError(err, { kind: "continue" });
       h.onDone("error");
       return;
     }
@@ -482,5 +583,25 @@ window.__netscopeAiAgent = (() => {
     h.onDone(reason);
   }
 
-  return { run, cancel, isRunning, newConversation, contextChars, getMessages, setMessages };
+  // Drops the conversation from a question on — for editing or redoing it.
+  // `later` is how many later questions share the same text, so the right
+  // one of several identical questions is found (counting from the end,
+  // which pruning of early history cannot shift).
+  function truncateAt(displayText, later) {
+    if (currentRun) return false;
+    let skip = Math.max(0, later || 0);
+    for (let i = messages.length - 1; i > 0; i--) {
+      const m = messages[i];
+      if (m.role === "user" && typeof m.content === "string" && m.content.startsWith(displayText)) {
+        if (skip-- > 0) continue;
+        messages = messages.slice(0, i);
+        return true;
+      }
+    }
+    // Older than what the history still holds: start from a clean slate.
+    messages = messages.slice(0, 1);
+    return true;
+  }
+
+  return { run, cancel, isRunning, newConversation, contextChars, getMessages, setMessages, truncateAt };
 })();
