@@ -13,6 +13,8 @@ window.__netscopeFlowsUi = (() => {
   const runsCache = new Map(); // flow id -> runs[]
   const live = new Map(); // flow id -> step results while a manual run is in flight
   const stateCache = new Map(); // flow id -> memory ({{state.x}}) kept between runs
+  const collCache = new Map(); // flow id -> { name: { count, fields, sample } }
+  const cpCache = new Map(); // flow id -> paused-run checkpoint summary, or null
   let editing = null; // flow being edited as JSON (null = list)
 
   const $ = (id) => document.getElementById(id);
@@ -99,6 +101,14 @@ window.__netscopeFlowsUi = (() => {
         api
           .rpc("flows.state", { id: f.id })
           .then((st) => stateCache.set(f.id, st || {}))
+          .catch(() => {}),
+        api
+          .rpc("flows.collections", { id: f.id })
+          .then((c) => collCache.set(f.id, c || {}))
+          .catch(() => {}),
+        api
+          .rpc("flows.checkpoint", { id: f.id })
+          .then((c) => cpCache.set(f.id, c))
           .catch(() => {})
       ])
     );
@@ -173,6 +183,7 @@ window.__netscopeFlowsUi = (() => {
     if (st.ms != null) return "delay";
     if (st.vars || st.state) return "set";
     if (st.flow) return "run_flow";
+    if (st.collection) return "collect";
     if (st.outcome) return "stop";
     if (st.message) return "log";
     return "http";
@@ -189,7 +200,8 @@ window.__netscopeFlowsUi = (() => {
     if: "if",
     stop: "stop",
     log: "log",
-    run_flow: "flow"
+    run_flow: "flow",
+    collect: "store"
   };
 
   const short = (v, n) => {
@@ -215,7 +227,11 @@ window.__netscopeFlowsUi = (() => {
       case "map":
         return `${short(st.items, 60)} → ${short(st.value, 60)} → vars.${st.save_as || st.id}`;
       case "for_each":
-        return `${st.as || "item"} in ${short(st.items, 80)}${st.max ? ` · max ${st.max}` : ""}${st.on_item_error === "continue" ? " · skips failed items" : ""}`;
+        return `${st.as || "item"} in ${short(st.items, 80)}${st.concurrency > 1 ? ` · ${st.concurrency} at a time` : ""}${st.max ? ` · max ${st.max}` : ""}${st.on_item_error === "continue" ? " · skips failed items" : ""}`;
+      case "collect":
+        return st.mode === "clear"
+          ? `clear collections.${st.collection}`
+          : `${st.mode || (st.key ? "append new" : "append")} ${short(st.items, 60)} → collections.${st.collection}${st.key ? ` by ${st.key}` : ""}`;
       case "repeat":
         return `${st.until ? "until " + short(st.until, 80) : st.while ? "while " + short(st.while, 80) : ""} · max ${st.max || 10}`;
       case "if":
@@ -247,6 +263,11 @@ window.__netscopeFlowsUi = (() => {
       } else {
         line.appendChild(methodPill((st.method || "GET").toUpperCase()));
         line.appendChild(node("span", "url", st.url || (st.from_id != null ? `captured request #${st.from_id}` : "")));
+      }
+      if (st.context === "page") {
+        const tag = node("span", "chip", "from page");
+        tag.title = "Sent from inside an open tab on this site";
+        line.appendChild(tag);
       }
     } else {
       line.appendChild(node("span", "method kind-" + t, TYPE_LABEL[t] || t));
@@ -373,11 +394,20 @@ window.__netscopeFlowsUi = (() => {
         meta.appendChild(tl);
       }
       if (f.lastRun) {
-        const lr = node("span", f.lastRun.ok ? "ok" : "fail", (f.lastRun.ok ? "Last run ok" : "Last run failed") + ` ${typeof fmtAgo === "function" ? fmtAgo(f.lastRun.at) : ""}`);
+        const lr = node(
+          "span",
+          f.lastRun.paused ? "" : f.lastRun.ok ? "ok" : "fail",
+          (f.lastRun.paused ? "Last run paused" : f.lastRun.ok ? "Last run ok" : "Last run failed") + ` ${typeof fmtAgo === "function" ? fmtAgo(f.lastRun.at) : ""}`
+        );
         if (!f.lastRun.ok && f.lastRun.error) lr.title = f.lastRun.error;
         meta.appendChild(lr);
       } else meta.appendChild(node("span", "", "Never run"));
       card.appendChild(meta);
+
+      const cp = cpCache.get(f.id);
+      if (cp && !cp.active) card.appendChild(pausedBanner(f, cp));
+      const colls = collCache.get(f.id) || {};
+      if (Object.keys(colls).length) card.appendChild(collectionsBlock(f, colls));
 
       const actions = node("div", "flow-actions");
       const runBtn = btn("Run now", () => runNow(f, runBtn), "primary");
@@ -525,6 +555,99 @@ window.__netscopeFlowsUi = (() => {
       say(err.message);
     }
     load();
+  }
+
+  function pausedBanner(f, cp) {
+    const box = node("div", "flow-paused");
+    const where = cp.next != null ? `at item ${(cp.next + 1).toLocaleString()}${cp.of ? ` of ${cp.of.toLocaleString()}` : ""} in ${cp.step}` : `at step ${cp.step}`;
+    const why = cp.reason === "budget" ? "it reached its run budget" : cp.reason === "interrupted" ? "Chrome stopped it" : "a step failed";
+    const p = node("p", "", `Paused ${where} — ${why}.`);
+    if (cp.autoResumePending) p.appendChild(document.createTextNode(" Continues by itself in about 30 s."));
+    if (cp.continuations) p.appendChild(document.createTextNode(` Continued ${cp.continuations}× so far.`));
+    box.appendChild(p);
+    const resumeBtn = btn("Resume", async () => {
+      resumeBtn.disabled = true;
+      resumeBtn.textContent = "Resuming…";
+      live.set(f.id, []);
+      open.add(f.id);
+      try {
+        const run = await api.rpc("flows.resume", { id: f.id });
+        say(run.paused ? `“${f.name}” paused again: ${run.note}` : run.ok ? `“${f.name}” finished` : `“${f.name}” failed: ${run.error}`);
+      } catch (err) {
+        say(err.message);
+      } finally {
+        live.delete(f.id);
+        load();
+      }
+    }, "primary");
+    box.appendChild(resumeBtn);
+    box.appendChild(
+      btn("Discard progress", async () => {
+        await api.rpc("flows.discard", { id: f.id }).catch((e) => say(e.message));
+        say(`Discarded “${f.name}”'s paused run — the next run starts from the beginning`);
+        load();
+      }, "ghost")
+    );
+    return box;
+  }
+
+  // CSV of a collection: one column per top-level key (nested values as JSON).
+  function toCsv(items) {
+    const cols = [];
+    const seen = new Set();
+    for (const x of items.slice(0, 500)) {
+      if (!x || typeof x !== "object" || Array.isArray(x)) continue;
+      for (const k of Object.keys(x)) {
+        if (seen.has(k)) continue;
+        seen.add(k);
+        cols.push(k);
+      }
+    }
+    const cell = (v) => {
+      const t = v == null ? "" : typeof v === "object" ? JSON.stringify(v) : String(v);
+      return /[",\n\r]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
+    };
+    if (!cols.length) return ["value"].concat(items.map((x) => cell(x))).join("\n");
+    return [cols.map(cell).join(",")].concat(items.map((x) => cols.map((k) => cell(x && x[k])).join(","))).join("\n");
+  }
+
+  function collectionsBlock(f, colls) {
+    const box = node("div", "flow-colls");
+    for (const name of Object.keys(colls)) {
+      const c = colls[name];
+      const row = node("div", "flow-coll");
+      const label = node("span", "coll-name", `collections.${name}`);
+      label.title = c.fields && c.fields.length ? "Fields: " + c.fields.join(", ") : "";
+      row.appendChild(label);
+      row.appendChild(node("span", "coll-count", `${c.count.toLocaleString()} item${c.count === 1 ? "" : "s"}`));
+      const fileBase = `${f.name}-${name}`.replace(/[^\w.-]+/g, "_").slice(0, 60);
+      const exportAs = async (kind) => {
+        try {
+          const all = await api.rpc("flows.collection", { id: f.id, name, limit: "all" });
+          if (kind === "csv") download(fileBase + ".csv", toCsv(all.items), "text/csv");
+          else download(fileBase + ".json", JSON.stringify(all.items, null, 2), "application/json");
+          say(`Downloaded ${all.total.toLocaleString()} items as ${kind.toUpperCase()}`);
+        } catch (err) {
+          say(err.message);
+        }
+      };
+      row.appendChild(btn("JSON", () => exportAs("json"), "ghost"));
+      row.appendChild(btn("CSV", () => exportAs("csv"), "ghost"));
+      const clear = btn("Clear", async () => {
+        if (!clear.dataset.armed) {
+          clear.dataset.armed = "1";
+          clear.textContent = "Click again to clear";
+          clear.className = "danger";
+          return;
+        }
+        await api.rpc("flows.clearCollection", { id: f.id, name }).catch((e) => say(e.message));
+        say(`Cleared collections.${name}`);
+        load();
+      }, "ghost");
+      row.appendChild(clear);
+      box.appendChild(row);
+    }
+    return box;
   }
 
   async function setTrigger(f, on) {
@@ -712,6 +835,13 @@ window.__netscopeFlowsUi = (() => {
       );
     }
     out.push(`- **Steps:** ${countSteps(steps)}`);
+    if (f.limits) {
+      out.push(`- **Budget per run:** ${f.limits.max_steps.toLocaleString()} step runs, ${f.limits.max_minutes} min${f.limits.auto_resume ? "; continues by itself when it runs out" : ""}`);
+    }
+    const colls = collCache.get(f.id) || {};
+    for (const name of Object.keys(colls)) out.push(`- **Collection ${code(name)}:** ${colls[name].count.toLocaleString()} items${colls[name].fields.length ? ` (${colls[name].fields.slice(0, 8).join(", ")})` : ""}`);
+    const cpInfo = cpCache.get(f.id);
+    if (cpInfo && !cpInfo.active) out.push(`- **Paused:** at ${cpInfo.next != null ? `item ${cpInfo.next + 1}${cpInfo.of ? ` of ${cpInfo.of}` : ""} in ` : ""}${code(cpInfo.step)} (${cpInfo.reason})`);
     const vars = maskJson(f.vars || {}, m);
     if (Object.keys(vars).length) out.push(`- **Starting variables:** ${code(JSON.stringify(vars))}`);
     if (last) {
@@ -770,13 +900,30 @@ window.__netscopeFlowsUi = (() => {
           out.push(`Turns each item of ${code(st.items)} into:`, "", fence("json", JSON.stringify(maskJson(st.value, m), null, 2)), "", `Saves the list to ${code("{{vars." + (st.save_as || st.id) + "}}")}.`, "");
         } else if (t === "for_each") {
           const bits = [`Runs the steps below once per item of ${code(st.items)}, as ${code("{{" + (st.as || "item") + "}}")}`, `at most ${st.max || 100} items`];
+          if (st.concurrency > 1) bits.push(`${st.concurrency} items at a time`);
           if (st.delay_ms) bits.push(`${st.delay_ms} ms between items`);
           bits.push(st.on_item_error === "continue" ? "a failed item is skipped" : "a failed item stops the flow");
           out.push(bits.join(", ") + ".", "");
-          if (st.collect) out.push(`After each item, adds ${code(JSON.stringify(maskJson(st.collect.value, m)))} to ${code("{{vars." + (st.collect.save_as || st.id) + "}}")}.`, "");
+          if (st.collect) {
+            out.push(
+              `After each item, adds ${code(JSON.stringify(maskJson(st.collect.value, m)))} to ${code("{{vars." + (st.collect.save_as || st.id) + "}}")}` +
+                `${st.collect.flatten ? ", flattened" : ""}${st.collect.unique_by ? `, de-duplicated by ${code(st.collect.unique_by)}` : ""}.`,
+              ""
+            );
+          }
         } else if (t === "repeat") {
           const cond = st.until ? `until ${code(st.until)} (checked after each pass)` : st.while ? `while ${code(st.while)} (checked before each pass)` : "";
           out.push(`Repeats the steps below ${cond}, at most ${st.max || 10} times${st.delay_ms ? `, ${st.delay_ms} ms apart` : ""}. ${code("{{loop.index}}")} counts passes from 0.`, "");
+        } else if (t === "collect") {
+          const mode = st.mode || (st.key ? "append" : "append");
+          const verb = {
+            append: st.key ? `Adds items not already in it (matched by ${code(st.key)})` : "Appends the items",
+            upsert: `Adds new items and merges changes into existing ones, matched by ${code(st.key)}`,
+            replace: "Replaces its contents with the items",
+            remove: `Removes the matching items${st.key ? ` (by ${code(st.key)})` : ""}`,
+            clear: "Empties it"
+          }[mode];
+          out.push(`${verb} — collection ${code(st.collection)}${mode !== "clear" ? `, from ${code(typeof st.items === "string" ? st.items : JSON.stringify(st.items))}` : ""}${st.flatten ? " (flattened)" : ""}. Kept between runs; read it as ${code("{{collections." + st.collection + "}}")}.`, "");
         } else if (t === "if") {
           out.push(`If ${code(st.condition)}, runs the “then” steps, otherwise the “else” steps.`, "");
         } else if (t === "stop") {
@@ -818,7 +965,9 @@ window.__netscopeFlowsUi = (() => {
         if (st.when) notes.push(`Runs only when ${code(st.when)}`);
         if (t === "http") {
           notes.push(`Expects status ${st.expect_status ? code(st.expect_status) : "2xx or 3xx"}`);
+          if (st.context === "page") notes.push("Sent from inside an open tab on the site (its origin, cookies and page scripts)");
           if (st.retry && st.retry.times) notes.push(`Retries up to ${st.retry.times}× on network errors, 429 and 5xx`);
+          else notes.push("Retries 429 / 503 up to 3×, honoring Retry-After");
           if (st.timeout_ms) notes.push(`Times out after ${st.timeout_ms} ms`);
         }
         if (t !== "stop") notes.push(st.continue_on_error ? "On failure: continues with the next step" : "On failure: stops the flow");

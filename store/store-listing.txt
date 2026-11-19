@@ -13,7 +13,7 @@ CALL APIS LIKE POSTMAN
 Paste a cURL into the chat and Kimi runs it and explains the response, or ask it to replay a request the page made with different parameters. Or do it yourself: Edit & send turns any captured request into an editable cURL with a Send button. Requests run from the extension, so CORS doesn't get in the way. Anything that can change data waits for your click first.
 
 AUTOMATE FLOWS AND BUILD SMALL BOTS
-Describe it — "whenever this page loads orders, post each new paid one to my webhook, never the same one twice" — and Kimi builds it from requests the page already made, runs it once to prove it works, then turns it on. Flows go beyond a sequence of calls: filter results, loop over them, page through APIs, branch with if/else, remember what was handled between runs, call Kimi mid-flow, and run on a schedule or whenever the page makes a matching request. Copy any flow as a Markdown document with secrets masked.
+Describe it — "whenever this page loads orders, post each new paid one to my webhook, never the same one twice" — and Kimi builds it from requests the page already made, runs it once to prove it works, then turns it on. Flows go beyond a sequence of calls: filter results, loop over them, page through APIs, branch with if/else, remember what was handled between runs, call Kimi mid-flow, and run on a schedule or whenever the page makes a matching request. Big jobs are built in: flatten and de-duplicate paged results, enrich them with up to 10 parallel requests that back off on 429s, keep results in collections you can export as CSV or JSON, and let long runs pause and resume by themselves. Endpoints that reject replays (WAF, anti-bot, CSRF) can be called from inside the page itself. Copy any flow as a Markdown document with secrets masked.
 
 KEEP LOGS ON RELOAD
 One switch keeps the captured traffic — and your conversation — across page reloads and navigations.
@@ -42,6 +42,9 @@ PRIVACY / REVIEW FORM — SUGGESTED JUSTIFICATIONS
 Single purpose:
 Developer tool for working with a web page's API: it captures the page's fetch/XHR/WebSocket traffic into an in-page popup, lets the user search it, resend requests (from cURL or captured requests), automate multi-step request flows on a schedule, and optionally ask an AI assistant about all of it with the user's own API key.
 
+Permission "unlimitedStorage":
+Lets the results a user's flows collect (their "collections") grow past Chrome's 10 MB default for extension storage. Stored locally only.
+
 Permission "storage":
 Settings, the user's Moonshot API key, saved flows and their run history (chrome.storage.local, never sync), and the per-tab chat (chrome.storage.session).
 
@@ -49,7 +52,7 @@ Permission "alarms":
 Runs the user's saved flows on the schedule the user chose.
 
 Permission "scripting":
-Injects the capture hook and popup into tabs that were already open before the extension was installed, when the user clicks the toolbar icon.
+Injects the capture hook and popup into tabs that were already open before the extension was installed, when the user clicks the toolbar icon; and, when the user chooses "send from the page" for a request, runs that request inside an open tab on the target site.
 
 Permission "clipboardWrite":
 Used only when the user clicks a Copy button (cURL, payload, AsyncAPI document, assistant reply).

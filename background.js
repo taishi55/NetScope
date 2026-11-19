@@ -305,6 +305,127 @@ function toHeaderList(h) {
   return Object.keys(h).map((name) => ({ name, value: String(h[name] == null ? "" : h[name]) }));
 }
 
+/* ------------------------------------------------- send from the page */
+
+// Runs inside the page (MAIN world) via chrome.scripting, so the request has
+// the page's origin, its first-party cookies (SameSite included), and passes
+// through the page's own fetch wrappers — which is where anti-bot / WAF
+// scripts attach their headers. Must be self-contained: it is serialized.
+async function pageFetch(req, timeoutMs, maxChars) {
+  const out = { ok: false, status: 0, statusText: "", url: req.url, headers: [], mime: "", body: "", bodyTruncated: false, binary: false, size: 0 };
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  const headers = new Headers();
+  for (const h of req.headers || []) {
+    try {
+      headers.append(h.name, h.value);
+    } catch (_) {}
+  }
+  let body;
+  if (req.body != null && req.body !== "" && !/^(GET|HEAD)$/i.test(req.method)) {
+    if (typeof req.body === "string") body = req.body;
+    else if (req.body && Array.isArray(req.body.form)) {
+      body = new FormData();
+      for (const f of req.body.form) body.append(f.name, f.value);
+      headers.delete("content-type");
+    } else {
+      body = JSON.stringify(req.body);
+      if (!headers.has("content-type")) headers.set("content-type", "application/json");
+    }
+  }
+  const init = { method: req.method, headers, body, credentials: "include", redirect: "follow", signal: ctl.signal };
+  try {
+    if (typeof window.__netscopeOwn === "function") window.__netscopeOwn(init, req.url, req.method);
+  } catch (_) {}
+  const t0 = performance.now();
+  try {
+    const res = await fetch(req.url, init);
+    out.status = res.status;
+    out.statusText = res.statusText || "";
+    out.ok = res.ok;
+    out.url = res.url || req.url;
+    out.redirected = !!res.redirected;
+    res.headers.forEach((value, name) => out.headers.push({ name, value }));
+    out.mime = res.headers.get("content-type") || "";
+    if (!out.mime || /json|text|xml|javascript|html|urlencoded|csv|svg|yaml|graphql|event-stream|ndjson/i.test(out.mime)) {
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let text = "";
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        out.size += value.byteLength;
+        text += dec.decode(value, { stream: true });
+        if (text.length > maxChars) {
+          text = text.slice(0, maxChars);
+          out.bodyTruncated = true;
+          reader.cancel().catch(() => {});
+          break;
+        }
+      }
+      out.body = text;
+    } else {
+      out.size = (await res.arrayBuffer()).byteLength;
+      out.binary = true;
+    }
+  } catch (e) {
+    out.error =
+      e && e.name === "AbortError"
+        ? `timed out after ${Math.round(timeoutMs / 1000)} s`
+        : "network error from the page: " + String((e && e.message) || e).slice(0, 200) + " (requests from the page follow its CORS rules)";
+  } finally {
+    clearTimeout(timer);
+  }
+  out.ms = Math.round(performance.now() - t0);
+  return out;
+}
+
+// "example.co.uk" from "api.example.co.uk": the last two labels, or three
+// when the second-to-last is a short public suffix part (co.uk, com.au …).
+// A heuristic, but one that never lumps unrelated *.co.uk sites together.
+function siteOf(hostname) {
+  const l = String(hostname || "").toLowerCase().split(".");
+  if (l.length > 2 && l[l.length - 2].length <= 3 && l[l.length - 1].length === 2) return l.slice(-3).join(".");
+  return l.slice(-2).join(".");
+}
+
+// The tab to send from: one on the request's own origin first, then one on
+// the same site (api.example.com ↔ www.example.com). Never a tab on another
+// site — its scripts would see the request, headers and body.
+async function pickTab(url, preferTabId) {
+  let origin = "";
+  let site = "";
+  try {
+    const u = new URL(url);
+    origin = u.origin;
+    site = siteOf(u.hostname);
+  } catch (_) {
+    return null;
+  }
+  let tabs = [];
+  try {
+    tabs = await chrome.tabs.query({});
+  } catch (_) {}
+  const info = (t) => {
+    try {
+      const u = new URL(t.url || "");
+      return /^https?:$/.test(u.protocol) ? u : null;
+    } catch (_) {
+      return null;
+    }
+  };
+  const rank = (t) => {
+    const u = info(t);
+    if (!u) return 0;
+    if (u.origin === origin) return t.id === preferTabId ? 4 : 3;
+    if (siteOf(u.hostname) === site) return t.id === preferTabId ? 2.5 : 2;
+    return 0;
+  };
+  let best = null;
+  for (const t of tabs) if (rank(t) > 0 && (!best || rank(t) > rank(best))) best = t;
+  return best;
+}
+
 async function runHttp(input, opts) {
   const o = opts || {};
   const req = {
@@ -363,7 +484,30 @@ async function runHttp(input, opts) {
     request: { method: req.method, url: req.url, headers: req.headers, body: typeof body === "string" ? body : body ? "<form-data>" : "" }
   };
 
-  try {
+  let logTab = Number.isInteger(o.tabId) ? o.tabId : null;
+  if (o.context === "page") {
+    clearTimeout(timer);
+    const tab = await pickTab(req.url, o.tabId);
+    if (!tab) {
+      result.error = `"send from the page" needs an open tab on ${new URL(req.url).origin} — open the site, or send from the extension instead`;
+    } else {
+      result.sentFrom = { tabId: tab.id, url: tab.url || "", title: tab.title || "" };
+      if (logTab === null) logTab = tab.id;
+      try {
+        const [inj] = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          world: "MAIN",
+          func: pageFetch,
+          args: [{ method: req.method, url: req.url, headers: req.headers.filter((h) => !FORBIDDEN.test(h.name)), body: req.body }, timeout, RESPONSE_MAX]
+        });
+        const r = (inj && inj.result) || { error: "the page returned no result" };
+        Object.assign(result, r, { droppedHeaders: dropped, request: result.request });
+      } catch (err) {
+        result.error = "could not run in the page: " + String((err && err.message) || err).slice(0, 200);
+      }
+    }
+    result.ms = result.ms || Date.now() - t0;
+  } else try {
     res = await fetch(req.url, {
       method: req.method,
       headers,
@@ -414,12 +558,12 @@ async function runHttp(input, opts) {
   } finally {
     clearTimeout(timer);
   }
-  result.ms = Date.now() - t0;
+  if (o.context !== "page") result.ms = Date.now() - t0;
 
   // Show the request in that tab's Traffic list, tagged with who sent it.
-  if (Number.isInteger(o.tabId) && o.log !== false) {
+  if (logTab !== null && o.log !== false) {
     try {
-      const entry = await Store.withTab(o.tabId, (t) => {
+      const entry = await Store.withTab(logTab, (t) => {
         const e = Store.add(t, {
           kind: "http",
           source: o.source || "you",
@@ -445,9 +589,10 @@ async function runHttp(input, opts) {
           resBodyPending: false,
           failed: !!result.error,
           error: result.error || undefined,
-          droppedHeaders: dropped.length ? dropped : undefined
+          droppedHeaders: dropped.length ? dropped : undefined,
+          sentFromPage: result.sentFrom ? result.sentFrom.url : undefined
         });
-        broadcast(o.tabId, { type: "add", entry: e });
+        broadcast(logTab, { type: "add", entry: e });
         return e;
       });
       result.entryId = entry.id;
@@ -533,22 +678,36 @@ async function aiForFlows(prompt) {
 }
 
 async function runFlow(id, opts) {
-  const o = opts || {};
+  const o = Object.assign({}, opts || {});
   if (running.has(id)) throw new Error("this flow is already running");
+  // Runs that start by themselves continue a paused job instead of wiping it.
+  if (!o.resume && (o.trigger === "schedule" || o.trigger === "request") && (await Flows.getCheckpoint(id))) o.resume = true;
   running.add(id);
   holdWorker(true);
+  const tabId = Number.isInteger(o.tabId) ? o.tabId : o.trigger_data && Number.isInteger(o.trigger_data.tab_id) ? o.trigger_data.tab_id : undefined;
   try {
     const run = await Flows.run(id, {
       trigger: o.trigger || "manual",
       trigger_data: o.trigger_data,
       vars: o.vars,
-      http: (req, step) => runHttp(req, { tabId: o.tabId, source: "flow", timeoutMs: step && step.timeout_ms }),
+      resume: !!o.resume,
+      http: (req, step) =>
+        runHttp(req, { tabId, source: "flow", timeoutMs: step && step.timeout_ms, context: step && step.context === "page" ? "page" : "extension" }),
       ai: aiForFlows,
       onStep: (sr) => {
         if (Number.isInteger(o.tabId)) broadcast(o.tabId, { type: "flow-step", flowId: id, step: sr });
       }
     });
-    if (!run.ok && (run.trigger === "schedule" || run.trigger === "request")) {
+    // Out of budget with auto_resume on: carry on in ~30 s (Chrome's minimum
+    // alarm delay), until done or MAX_CONTINUATIONS runs.
+    if (run.paused) {
+      const f = await Flows.get(id);
+      const cp = await Flows.getCheckpoint(id);
+      if (f && f.limits && f.limits.auto_resume && cp && (cp.continuations || 0) < Flows.MAX_CONTINUATIONS) {
+        chrome.alarms.create("resume:" + id, { delayInMinutes: 0.5 });
+      }
+    }
+    if (!run.ok && (run.trigger === "schedule" || run.trigger === "request" || run.trigger === "resume")) {
       await chrome.storage.local.set({ [ALERT_KEY]: { flowId: id, flowName: run.flowName, at: run.startedAt, error: run.error, trigger: run.trigger } });
       chrome.action.setBadgeBackgroundColor({ color: "#D64545" }).catch(() => {});
       chrome.action.setBadgeText({ text: "!" }).catch(() => {});
@@ -561,13 +720,35 @@ async function runFlow(id, opts) {
 }
 
 chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name.startsWith("resume:")) {
+    const id = alarm.name.slice(7);
+    Flows.getCheckpoint(id).then((cp) => cp && runFlow(id, { resume: true, trigger: "resume" }).catch(() => {}));
+    return;
+  }
   if (!alarm.name.startsWith("flow:")) return;
   const id = alarm.name.slice(5);
-  Flows.get(id).then((f) => {
+  Flows.get(id).then(async (f) => {
     if (!f || !f.schedule || !f.schedule.enabled) return Flows.syncAlarms();
+    // A paused job is continued by its schedule rather than thrown away.
     return runFlow(id, { trigger: "schedule" }).catch(() => {});
   });
 });
+
+// A run in progress lives in this worker's memory. If a checkpoint still
+// says "active" when the worker starts, the worker that ran it is gone:
+// mark it interrupted, and pick it back up if the flow auto-resumes.
+(async () => {
+  try {
+    for (const f of await Flows.list()) {
+      const cp = await Flows.getCheckpoint(f.id);
+      if (!cp || !cp.active) continue;
+      cp.active = false;
+      cp.paused_reason = "interrupted";
+      await Flows.setCheckpoint(f.id, cp);
+      if (f.limits && f.limits.auto_resume) chrome.alarms.create("resume:" + f.id, { delayInMinutes: 0.5 });
+    }
+  } catch (_) {}
+})();
 
 /* ----------------------------------------------------------------- rpc */
 
@@ -587,7 +768,13 @@ async function handleRpc(tabId, method, p) {
       return prefs;
     case "http": {
       const req = p.curl ? globalThis.__netscopeCurl.parse(p.curl) : p.request || {};
-      return runHttp(req, { tabId, source: p.source || "you", timeoutMs: p.timeoutMs, credentials: p.credentials });
+      return runHttp(req, {
+        tabId,
+        source: p.source || "you",
+        timeoutMs: p.timeoutMs,
+        credentials: p.credentials,
+        context: p.context === "page" ? "page" : "extension"
+      });
     }
     case "flows.list":
       return Flows.list();
@@ -603,6 +790,49 @@ async function handleRpc(tabId, method, p) {
       return Flows.getState(p.id);
     case "flows.resetState":
       await Flows.setState(p.id, null);
+      return true;
+    case "flows.collections": {
+      const all = await Flows.getCollections(p.id);
+      const out = {};
+      for (const name of Object.keys(all)) {
+        const items = all[name] || [];
+        const first = items.find((x) => x && typeof x === "object");
+        out[name] = { count: items.length, fields: first ? Object.keys(first).slice(0, 30) : [], sample: items.slice(0, 3) };
+      }
+      return out;
+    }
+    case "flows.collection": {
+      const items = (await Flows.getCollections(p.id))[p.name] || [];
+      const offset = Math.max(0, Number(p.offset) || 0);
+      const limit = p.limit === "all" ? items.length : Math.min(1000, Math.max(1, Number(p.limit) || 100));
+      return { total: items.length, offset, items: items.slice(offset, offset + limit) };
+    }
+    case "flows.clearCollection": {
+      const all = await Flows.getCollections(p.id);
+      delete all[p.name];
+      await Flows.setCollections(p.id, all);
+      return true;
+    }
+    case "flows.checkpoint": {
+      const cp = await Flows.getCheckpoint(p.id);
+      if (!cp) return null;
+      return {
+        step: cp.stepId,
+        next: cp.loop ? cp.loop.next : null,
+        of: cp.loop && cp.loop.items ? cp.loop.items.length : null,
+        kind: cp.loop ? cp.loop.kind : null,
+        reason: cp.paused_reason || (cp.active ? "running" : ""),
+        active: !!cp.active,
+        continuations: cp.continuations || 0,
+        jobStartedAt: cp.jobStartedAt,
+        autoResumePending: !!(await chrome.alarms.get("resume:" + p.id))
+      };
+    }
+    case "flows.resume":
+      return runFlow(p.id, { tabId, resume: true, trigger: "resume" });
+    case "flows.discard":
+      await Flows.setCheckpoint(p.id, null);
+      await chrome.alarms.clear("resume:" + p.id);
       return true;
     case "flows.run":
       return runFlow(p.id, { tabId, vars: p.vars, trigger: p.trigger || "manual" });

@@ -525,6 +525,7 @@ window.__netscopeAi = (() => {
         card.appendChild(line);
         const parts = [];
         if (ask.fromId != null) parts.push(`Based on captured request #${ask.fromId}; its headers are copied as captured.`);
+        if (ask.fromPage) parts.push("Sent from inside the page, with the site's own cookies and origin.");
         const hs = (ask.headers || []).map((h) => `${h.name}: ${/^(authorization|cookie|x-api-key)$/i.test(h.name) ? "•••• (" + String(h.value).length + " chars)" : h.value}`);
         let preview = hs.join("\n");
         if (ask.body) preview += (preview ? "\n\n" : "") + (typeof ask.body === "string" ? ask.body : JSON.stringify(ask.body, null, 2));

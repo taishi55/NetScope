@@ -30,7 +30,10 @@ Where it is kept:
   the tab closes, and the whole database is wiped each time the browser starts. Each tab keeps
   at most the last 3,000 entries.
 - **Chat** — per tab in `chrome.storage.session`, which Chrome clears when the browser closes.
-- **Flows, their memory and run history** — in `chrome.storage.local` until you delete them. A flow
+- **Flows, their memory, collections and run history** — in `chrome.storage.local` until you
+  delete them. Collections hold whatever data a flow's `collect` steps save from API responses
+  (up to 100,000 items each); clear or export them from the flow card. A paused run keeps a
+  checkpoint (its variables and progress) until it finishes or you discard it. A flow
   built from a captured request stores that request's headers, which can include
   authorization tokens. Run history keeps step outputs (up to 4 KB each) for the last 15 runs.
 - **Settings and API key** — in `chrome.storage.local` (below).
@@ -80,7 +83,9 @@ copied text. `chrome.storage.local` is not encrypted; prefer a key with a spend 
 
 When you click **Send** in Edit & send, approve a request Kimi proposes, or run a flow, the
 background worker sends that request to its URL with the browser's own cookies for that site,
-and records it in the tab's capture log. Scheduled flows run with `chrome.alarms` while Chrome
+and records it in the tab's capture log. A request marked **from the page** is instead sent from inside an open
+tab on that site (NetScope runs a small script in the tab to do it), so it carries that page's
+origin, cookies and page scripts; the response stays on your machine like any other. Scheduled flows run with `chrome.alarms` while Chrome
 is open, without further interaction, until you change their schedule to "Manual only" or
 delete them. A flow with a **page-request trigger** reads the matching captured response
 (status, headers, body) of the page you are on and runs, at most once per its cooldown, until
@@ -99,7 +104,8 @@ this stricter or turn it off in Settings.
 - **storage** — settings, API key, flows and run history (local); chat per tab (session).
 - **alarms** — flow schedules.
 - **scripting** — injects the capture hook into tabs that were already open when you first
-  click the icon.
+  click the icon, and sends "from the page" requests inside the site's tab.
+- **unlimitedStorage** — lets flow collections grow past Chrome's 10 MB default.
 - **clipboardWrite** — the Copy buttons.
 
 ## Data collection

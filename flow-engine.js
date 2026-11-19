@@ -45,14 +45,24 @@ globalThis.__netscopeFlows = (() => {
   const MAX_RUNS = 15;
   const MAX_DEF_STEPS = 80; // steps in a definition, nested ones included
   const MAX_DEPTH = 4; // nesting of for_each / repeat / if
-  const MAX_EXEC = 2000; // step executions per run, loops included
-  const RUN_TIME_LIMIT = 240000; // ms per run
+  // Per-run budgets. Flows can raise them (limits.max_steps / max_minutes)
+  // up to the caps; past that, a run pauses at a checkpoint and resumes.
+  const MAX_EXEC = 5000; // default step executions per run, loops included
+  const MAX_EXEC_CAP = 100000;
+  const RUN_TIME_LIMIT = 600000; // default ms per run
+  const RUN_TIME_CAP = 3600000;
+  const MAX_CONCURRENCY = 10;
+  const MAX_COLLECTION = 100000; // items per persistent collection
+  const CHECKPOINT_EVERY_MS = 2000;
+  const MAX_CONTINUATIONS = 200;
   const MAX_SUBFLOW_DEPTH = 3;
   const OUT_MAX = 4000;
   const LOG_MAX = 200;
 
-  const TYPES = ["http", "ai", "delay", "set", "filter", "map", "for_each", "repeat", "if", "stop", "log", "run_flow"];
-  const RESERVED = new Set(["vars", "steps", "state", "trigger", "loop", "now", "now_iso", "today", "uuid"]);
+  const TYPES = ["http", "ai", "delay", "set", "filter", "map", "for_each", "repeat", "if", "stop", "log", "run_flow", "collect"];
+  const RESERVED = new Set(["vars", "steps", "state", "trigger", "loop", "collections", "now", "now_iso", "today", "uuid"]);
+  const DATA_PREFIX = "netscope.flowData."; // + flow id: { collections: { name: [...] } }
+  const CP_PREFIX = "netscope.flowCheckpoint."; // + flow id
 
   const clone = (v) => JSON.parse(JSON.stringify(v === undefined ? null : v));
   const newId = () => "fl_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
@@ -96,6 +106,38 @@ globalThis.__netscopeFlows = (() => {
     } catch (_) {}
   }
 
+  async function getCollections(id) {
+    try {
+      const got = await chrome.storage.local.get(DATA_PREFIX + id);
+      const d = got[DATA_PREFIX + id];
+      return (d && d.collections) || {};
+    } catch (_) {
+      return {};
+    }
+  }
+
+  async function setCollections(id, collections) {
+    const key = DATA_PREFIX + id;
+    if (!collections || !Object.keys(collections).length) await chrome.storage.local.remove(key);
+    else await chrome.storage.local.set({ [key]: { collections } });
+  }
+
+  async function getCheckpoint(id) {
+    try {
+      const got = await chrome.storage.local.get(CP_PREFIX + id);
+      return got[CP_PREFIX + id] || null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  async function setCheckpoint(id, cp) {
+    try {
+      if (cp) await chrome.storage.local.set({ [CP_PREFIX + id]: cp });
+      else await chrome.storage.local.remove(CP_PREFIX + id);
+    } catch (_) {}
+  }
+
   /* --------------------------------------------------------- validation */
 
   const childLists = (s) =>
@@ -113,6 +155,7 @@ globalThis.__netscopeFlows = (() => {
     if (s.ms != null) return "delay";
     if (s.vars || s.state) return "set";
     if (s.flow) return "run_flow";
+    if (s.collection) return "collect";
     if (s.outcome) return "stop";
     if (s.message) return "log";
     return "http";
@@ -146,6 +189,14 @@ globalThis.__netscopeFlows = (() => {
       if (s.type === "if" && !s.condition) errors.push(`${at} needs condition`);
       if (s.type === "run_flow" && !s.flow) errors.push(`${at} needs flow (a flow id)`);
       if (s.type === "set" && !s.vars && !s.state) errors.push(`${at} needs vars or state`);
+      if (s.type === "collect") {
+        if (!s.collection || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(String(s.collection))) errors.push(`${at} needs collection, a simple name`);
+        if (s.mode && !["append", "upsert", "replace", "remove", "clear"].includes(s.mode)) errors.push(`${at}: mode must be append, upsert, replace, remove or clear`);
+        if (s.mode !== "clear" && s.items == null) errors.push(`${at} needs items`);
+        if (s.mode === "upsert" && !s.key) errors.push(`${at}: upsert needs key`);
+      }
+      if (s.concurrency != null) s.concurrency = Math.min(MAX_CONCURRENCY, Math.max(1, Number(s.concurrency) || 1));
+      if (s.context && !["extension", "page"].includes(s.context)) errors.push(`${at}: context must be "extension" or "page"`);
       if ((s.type === "for_each" || s.type === "repeat") && (!Array.isArray(s.steps) || !s.steps.length)) {
         errors.push(`${at} needs a non-empty steps array`);
       }
@@ -191,6 +242,12 @@ globalThis.__netscopeFlows = (() => {
       };
     }
     if (f.vars && typeof f.vars !== "object") errors.push("vars must be an object");
+    const lim = f.limits || {};
+    f.limits = {
+      max_steps: Math.min(MAX_EXEC_CAP, Math.max(100, Number(lim.max_steps) || MAX_EXEC)),
+      max_minutes: Math.min(RUN_TIME_CAP / 60000, Math.max(1, Number(lim.max_minutes) || RUN_TIME_LIMIT / 60000)),
+      auto_resume: !!lim.auto_resume
+    };
     if (errors.length) {
       const err = new Error("Invalid flow: " + errors.join("; "));
       err.errors = errors;
@@ -232,6 +289,8 @@ globalThis.__netscopeFlows = (() => {
       await chrome.storage.local.set({ [RUNS_KEY]: runs });
     } catch (_) {}
     await setState(id, null);
+    await setCollections(id, null).catch(() => {});
+    await setCheckpoint(id, null);
     await syncAlarms();
     return next.length !== flows.length;
   }
@@ -257,7 +316,7 @@ globalThis.__netscopeFlows = (() => {
       const flows = await list();
       const f = flows.find((x) => x.id === run.flowId);
       if (f) {
-        f.lastRun = { id: run.id, at: run.startedAt, ok: run.ok, ms: run.ms, error: run.error || "", trigger: run.trigger };
+        f.lastRun = { id: run.id, at: run.startedAt, ok: run.ok, paused: !!run.paused, ms: run.ms, error: run.error || "", trigger: run.trigger };
         await writeAll(flows);
       }
     } catch (_) {}
@@ -326,6 +385,31 @@ globalThis.__netscopeFlows = (() => {
   }
 
   const toList = (v) => (Array.isArray(v) ? v : v == null ? [] : [v]);
+  function flattenList(list, depth) {
+    const out = [];
+    for (const x of list) {
+      if (Array.isArray(x) && depth > 0) out.push(...flattenList(x, depth - 1));
+      else out.push(x);
+    }
+    return out;
+  }
+
+  // Shared by collect options and the collect step: optional flatten, then
+  // de-duplication by a key path (or by the whole value).
+  function shapeList(list, opts) {
+    let out = toList(list);
+    if (opts.flatten) out = flattenList(out, opts.flatten === "deep" ? Infinity : opts.flatten === true ? 1 : Number(opts.flatten) || 1);
+    if (opts.unique_by || opts.unique) {
+      const seen = new Set();
+      out = out.filter((x) => {
+        const k = asText(opts.unique_by ? getPath(x, opts.unique_by) : x);
+        if (seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      });
+    }
+    return out;
+  }
   const pick = (x, field) => (field ? getPath(x, field) : x);
 
   // filter name -> (value, arg string) => value
@@ -383,6 +467,33 @@ globalThis.__netscopeFlows = (() => {
       return out;
     },
     reverse: (v) => toList(v).slice().reverse(),
+    // flatten (one level), flatten:2, flatten:deep — e.g. pages of rank_list arrays into one list
+    flatten: (v, a) => flattenList(toList(v), a === "deep" ? Infinity : Number(a) || 1),
+    compact: (v) => toList(v).filter((x) => x !== null && x !== undefined && x !== ""),
+    chunk: (v, a) => {
+      const n = Math.max(1, Number(a) || 1);
+      const l = toList(v);
+      const out = [];
+      for (let i = 0; i < l.length; i += n) out.push(l.slice(i, i + n));
+      return out;
+    },
+    group_by: (v, a) => {
+      const out = {};
+      for (const x of toList(v)) (out[asText(pick(x, a))] = out[asText(pick(x, a))] || []).push(x);
+      return out;
+    },
+    index_by: (v, a) => {
+      const out = {};
+      for (const x of toList(v)) out[asText(pick(x, a))] = x;
+      return out;
+    },
+    count_by: (v, a) => {
+      const out = {};
+      for (const x of toList(v)) out[asText(pick(x, a))] = (out[asText(pick(x, a))] || 0) + 1;
+      return out;
+    },
+    merge: (v) => Object.assign({}, ...toList(v).filter((x) => x && typeof x === "object" && !Array.isArray(x))),
+    uniq: (v, a) => FILTERS.unique(v, a),
     unique: (v, a) => {
       const seen = new Set();
       return toList(v).filter((x) => {
@@ -550,6 +661,23 @@ globalThis.__netscopeFlows = (() => {
 
   /* ---------------------------------------------------------------- run */
 
+  function hostOf(u) {
+    try {
+      return new URL(u).host;
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function retryAfterMs(res) {
+    const h = (res.headers || []).find((x) => /^retry-after$/i.test(x.name));
+    if (!h) return 0;
+    const n = Number(h.value);
+    if (!isNaN(n)) return Math.min(120000, Math.max(0, n * 1000));
+    const d = Date.parse(h.value);
+    return isNaN(d) ? 0 : Math.min(120000, Math.max(0, d - Date.now()));
+  }
+
   function buildHttpRequest(step, ctx) {
     let req;
     if (step.curl) {
@@ -644,17 +772,24 @@ globalThis.__netscopeFlows = (() => {
     } catch (_) {}
   }
 
-  async function withLoopScope(ctx, as, fn) {
-    const prevItem = Object.prototype.hasOwnProperty.call(ctx, as) ? ctx[as] : undefined;
-    const prevLoop = ctx.loop;
-    try {
-      return await fn();
-    } finally {
-      if (prevItem === undefined) delete ctx[as];
-      else ctx[as] = prevItem;
-      ctx.loop = prevLoop;
-    }
+  // A loop iteration's own scope: reads fall through to the run (vars, state,
+  // collections, trigger, outer loop names), but {{item}}, {{loop}} and
+  // {{steps.x}} written inside belong to this iteration — which is what lets
+  // parallel iterations run without trampling each other.
+  function iterCtx(ctx, as, item, loop) {
+    const c = Object.create(ctx);
+    c.steps = Object.create(ctx.steps);
+    c[as] = item;
+    c.loop = loop;
+    return c;
   }
+
+  // After an iteration, its step results become the run's "latest".
+  function settleIter(ctx, c) {
+    for (const k of Object.keys(c.steps)) ctx.steps[k] = c.steps[k];
+  }
+
+  const loopInfo = (i, n) => ({ index: i, number: i + 1, count: n, first: i === 0, last: i === n - 1 });
 
   async function execSteps(steps, ctx, rt, prefix, depth) {
     for (const step of steps || []) {
@@ -667,8 +802,16 @@ globalThis.__netscopeFlows = (() => {
   async function execStep(step, ctx, rt, prefix, depth) {
     const path = prefix ? prefix + "/" + step.id : step.id;
     const r = record(rt, path, step, depth);
-    if (++rt.executed > MAX_EXEC) throw new StepFailure(`stopped: more than ${MAX_EXEC} step runs in one flow run — lower a loop's max`);
-    if (Date.now() > rt.deadline) throw new StepFailure(`stopped: the run took longer than ${RUN_TIME_LIMIT / 1000} s`);
+    if (++rt.executed > rt.maxExec) {
+      const e = new StepFailure(`stopped: reached this run's budget of ${rt.maxExec} step runs`);
+      e.budget = true;
+      throw e;
+    }
+    if (Date.now() > rt.deadline) {
+      const e = new StepFailure(`stopped: reached this run's time budget of ${Math.round(rt.timeLimit / 60000)} min`);
+      e.budget = true;
+      throw e;
+    }
 
     r.runs++;
     const t0 = Date.now();
@@ -712,9 +855,10 @@ globalThis.__netscopeFlows = (() => {
     emit(rt, r, depth === 1);
 
     if (failed) {
-      if (step.continue_on_error) return null;
+      if (step.continue_on_error && !failed.budget) return null;
       const e = new StepFailure(failed.fromChild ? failed.message : `step "${path}" failed: ${failed.message}`);
       e.fromChild = true;
+      e.budget = !!failed.budget;
       throw e;
     }
     return signal;
@@ -753,20 +897,17 @@ globalThis.__netscopeFlows = (() => {
 
       case "filter":
       case "map": {
-        const items = resolveItems(step.items, ctx);
+        const items = shapeList(resolveItems(step.items, ctx), { flatten: step.flatten });
         const as = step.as || "item";
-        const out = await withLoopScope(ctx, as, async () => {
-          const acc = [];
-          for (let i = 0; i < items.length; i++) {
-            ctx[as] = items[i];
-            ctx.loop = { index: i, number: i + 1, count: items.length, first: i === 0, last: i === items.length - 1 };
-            if (step.type === "filter") {
-              if (evalWhen(step.where, ctx)) acc.push(items[i]);
-              if (step.limit && acc.length >= Number(step.limit)) break;
-            } else acc.push(renderDeep(step.value, ctx));
-          }
-          return acc;
-        });
+        let out = [];
+        for (let i = 0; i < items.length; i++) {
+          const c = iterCtx(ctx, as, items[i], loopInfo(i, items.length));
+          if (step.type === "filter") {
+            if (evalWhen(step.where, c)) out.push(items[i]);
+            if (step.limit && out.length >= Number(step.limit)) break;
+          } else out.push(renderDeep(step.value, c));
+        }
+        out = shapeList(out, { unique_by: step.unique_by, unique: step.unique });
         const name = step.save_as || step.id;
         ctx.vars[name] = out;
         ctx.steps[step.id] = { body: out, count: out.length, ok: true };
@@ -775,56 +916,96 @@ globalThis.__netscopeFlows = (() => {
       }
 
       case "for_each": {
-        const items = resolveItems(step.items, ctx);
-        const max = Math.min(Math.max(1, Number(step.max) || 100), 1000);
+        const top = depth === 1;
+        const resume = top && rt.resume && rt.resume.stepId === step.id && rt.resume.kind === "for_each" ? rt.resume : null;
+        if (resume) rt.resume = null; // consumed
+        const items = resume ? resume.items : shapeList(resolveItems(step.items, ctx), { flatten: step.flatten });
+        const max = Math.min(Math.max(1, Number(step.max) || 100), 10000);
         const as = step.as || "item";
         const list = items.slice(0, max);
-        const collected = [];
-        let failures = 0;
-        const sig = await withLoopScope(ctx, as, async () => {
-          for (let i = 0; i < list.length; i++) {
-            ctx[as] = list[i];
-            ctx.loop = { index: i, number: i + 1, count: list.length, first: i === 0, last: i === list.length - 1 };
+        const conc = Math.min(MAX_CONCURRENCY, Math.max(1, Number(step.concurrency) || 1));
+        const results = resume && Array.isArray(resume.results) ? resume.results.slice() : [];
+        const done = new Set();
+        let low = resume ? resume.next : 0; // every index below this is finished
+        for (let i = 0; i < low; i++) done.add(i);
+        let next = low;
+        let failures = resume ? resume.failures || 0 : 0;
+        let stopSig = null;
+        let fatal = null;
+
+        const advance = (i) => {
+          done.add(i);
+          while (done.has(low)) low++;
+          if (top) rt.checkpoint({ stepId: step.id, kind: "for_each", items: list, next: low, results: results.slice(0, low), failures });
+        };
+
+        const worker = async () => {
+          while (!stopSig && !fatal) {
+            const i = next++;
+            if (i >= list.length) return;
+            const c = iterCtx(ctx, as, list[i], loopInfo(i, list.length));
             try {
-              const s = await execSteps(step.steps, ctx, rt, path + "[]", depth + 1);
-              if (s) return s;
-              if (step.collect && step.collect.value !== undefined) collected.push(renderDeep(step.collect.value, ctx));
-            } catch (err) {
-              // Run limits ("stopped: …") always end the run, even mid-loop.
-              if (step.on_item_error === "continue" && !String(err.message).includes("stopped: ")) {
-                failures++;
-                continue;
+              const sig = await execSteps(step.steps, c, rt, path + "[]", depth + 1);
+              settleIter(ctx, c);
+              if (sig) {
+                stopSig = sig;
+                return;
               }
-              throw err;
+              if (step.collect && step.collect.value !== undefined) results[i] = renderDeep(step.collect.value, c);
+            } catch (err) {
+              settleIter(ctx, c);
+              // Run budgets always end the run (it can resume); other item
+              // failures may be skipped.
+              if (step.on_item_error === "continue" && !err.budget && !String(err.message).includes("stopped: ")) failures++;
+              else {
+                fatal = err;
+                return;
+              }
             }
-            if (step.delay_ms && i < list.length - 1) await sleep(Math.min(Number(step.delay_ms) || 0, 60000));
+            advance(i);
+            if (step.delay_ms && next < list.length) await sleep(Math.min(Number(step.delay_ms) || 0, 60000));
           }
-          return null;
-        });
-        if (step.collect) ctx.vars[step.collect.save_as || step.id] = collected;
+        };
+        await Promise.all(Array.from({ length: Math.min(conc, Math.max(1, list.length - next)) }, worker));
+        if (fatal) throw fatal;
+
+        let collected = [];
+        if (step.collect) {
+          collected = shapeList(results.filter((x) => x !== undefined), step.collect);
+          ctx.vars[step.collect.save_as || step.id] = collected;
+        }
         ctx.steps[step.id] = { body: collected, count: list.length, failed: failures, ok: true };
         r.output =
           `${list.length} item${list.length === 1 ? "" : "s"}` +
+          (conc > 1 ? `, ${conc} at a time` : "") +
           (items.length > list.length ? ` (stopped at max ${max} of ${items.length})` : "") +
           (failures ? `, ${failures} failed` : "") +
-          (step.collect ? ` → vars.${step.collect.save_as || step.id}` : "");
-        return sig;
+          (resume ? `, resumed at ${resume.next + 1}` : "") +
+          (step.collect ? ` → vars.${step.collect.save_as || step.id} (${collected.length})` : "");
+        return stopSig;
       }
 
       case "repeat": {
-        const max = Math.min(Math.max(1, Number(step.max) || 10), 500);
-        let i = 0;
+        const top = depth === 1;
+        const resume = top && rt.resume && rt.resume.stepId === step.id && rt.resume.kind === "repeat" ? rt.resume : null;
+        if (resume) rt.resume = null;
+        const max = Math.min(Math.max(1, Number(step.max) || 10), 5000);
+        let i = resume ? resume.next : 0;
+        const results = resume && Array.isArray(resume.results) ? resume.results.slice() : [];
         let reason = `reached max ${max}`;
         const prevLoop = ctx.loop;
         try {
           for (; i < max; i++) {
-            ctx.loop = { index: i, number: i + 1, count: max, first: i === 0, last: i === max - 1 };
+            ctx.loop = loopInfo(i, max);
             if (step.while && !evalWhen(step.while, ctx)) {
               reason = "while became false";
               break;
             }
-            const s = await execSteps(step.steps, ctx, rt, path + "[]", depth + 1);
-            if (s) return s;
+            const sig = await execSteps(step.steps, ctx, rt, path + "[]", depth + 1);
+            if (sig) return sig;
+            // Collect each pass's value (e.g. a page's rank_list) as we go.
+            if (step.collect && step.collect.value !== undefined) results.push(renderDeep(step.collect.value, ctx));
+            if (top) rt.checkpoint({ stepId: step.id, kind: "repeat", next: i + 1, results });
             if (step.until && evalWhen(step.until, ctx)) {
               i++;
               reason = "until became true";
@@ -835,8 +1016,16 @@ globalThis.__netscopeFlows = (() => {
         } finally {
           ctx.loop = prevLoop;
         }
-        ctx.steps[step.id] = { count: i, ok: true };
-        r.output = `${i} iteration${i === 1 ? "" : "s"}, ${reason}`;
+        let collected = [];
+        if (step.collect) {
+          collected = shapeList(results, step.collect);
+          ctx.vars[step.collect.save_as || step.id] = collected;
+        }
+        ctx.steps[step.id] = { count: i, body: collected, ok: true };
+        r.output =
+          `${i} iteration${i === 1 ? "" : "s"}, ${reason}` +
+          (resume ? `, resumed at ${resume.next + 1}` : "") +
+          (step.collect ? ` → vars.${step.collect.save_as || step.id} (${collected.length})` : "");
         return null;
       }
 
@@ -877,6 +1066,53 @@ globalThis.__netscopeFlows = (() => {
         return null;
       }
 
+      case "collect": {
+        const name = String(step.collection);
+        const col = rt.coll.get(name);
+        const mode = step.mode || (step.key ? "upsert" : "append");
+        let items = mode === "clear" ? [] : shapeList(renderDeep(step.items, ctx), { flatten: step.flatten });
+        const keyOf = (x) => (step.key ? asText(getPath(x, step.key)) : null);
+        let added = 0;
+        let updated = 0;
+        let removed = 0;
+        if (mode === "clear") {
+          removed = col.items.length;
+          rt.coll.replace(name, []);
+        } else if (mode === "replace") {
+          rt.coll.replace(name, shapeList(items, { unique_by: step.key }));
+          added = rt.coll.get(name).items.length;
+        } else if (mode === "remove") {
+          const drop = new Set(items.map((x) => (x && typeof x === "object" && step.key ? keyOf(x) : asText(x))));
+          const kept = col.items.filter((x) => !drop.has(step.key ? keyOf(x) : asText(x)));
+          removed = col.items.length - kept.length;
+          rt.coll.replace(name, kept);
+        } else {
+          for (const x of items) {
+            const k = keyOf(x);
+            if (k !== null && k !== "") {
+              const at = col.index.get(k);
+              if (at !== undefined) {
+                if (mode === "upsert") {
+                  const prev = col.items[at];
+                  col.items[at] = prev && typeof prev === "object" && x && typeof x === "object" && !Array.isArray(x) ? Object.assign({}, prev, x) : x;
+                  updated++;
+                }
+                continue; // append with a key = append only new keys
+              }
+              col.index.set(k, col.items.length);
+            }
+            col.items.push(x);
+            added++;
+          }
+          if (col.items.length > MAX_COLLECTION) rt.coll.replace(name, col.items.slice(-MAX_COLLECTION));
+        }
+        rt.coll.touch(name);
+        const count = rt.coll.get(name).items.length;
+        ctx.steps[step.id] = { added, updated, removed, count, ok: true };
+        r.output = `${mode}: ${added} added${updated ? `, ${updated} updated` : ""}${removed ? `, ${removed} removed` : ""} → collections.${name} now ${count}`;
+        return null;
+      }
+
       case "ai": {
         if (!rt.ai) throw new StepFailure("AI steps need the Kimi API key set up");
         let prompt = render(step.prompt, ctx);
@@ -900,14 +1136,26 @@ globalThis.__netscopeFlows = (() => {
         r.method = req.method;
         r.url = req.url;
         const retry = step.retry || {};
-        const times = Math.min(Math.max(0, Number(retry.times) || 0), 5);
+        const times = Math.min(Math.max(0, Number(retry.times) || 0), 8);
+        // 429 / 503 are always retried (3× unless retry.times says otherwise),
+        // honoring Retry-After; the pause applies to every worker hitting that
+        // host, so a parallel loop backs off together instead of hammering.
+        const limitTimes = retry.times != null ? times : 3;
+        const host = hostOf(req.url);
         let res;
         for (let attempt = 0; ; attempt++) {
+          const wait = (rt.hostWait.get(host) || 0) - Date.now();
+          if (wait > 0) await sleep(Math.min(wait, 120000));
           res = await rt.http(req, step);
           const bad = res.error || !statusOk(res.status, step.expect_status);
-          const retryable = res.error || res.status === 429 || res.status >= 500;
-          if (!bad || !retryable || attempt >= times) break;
-          await sleep(Math.min(Number(retry.delay_ms) || 1000 * (attempt + 1), 30000));
+          if (!bad) break;
+          const limited = res.status === 429 || res.status === 503;
+          const retryable = limited || res.error || res.status >= 500;
+          if (!retryable || attempt >= (limited ? limitTimes : times)) break;
+          const backoff = (retryAfterMs(res) || Math.min(60000, (Number(retry.delay_ms) || 1000) * 2 ** attempt)) + Math.floor(Math.random() * 250);
+          if (limited) rt.hostWait.set(host, Math.max(rt.hostWait.get(host) || 0, Date.now() + backoff));
+          else await sleep(backoff);
+          r.retries = (r.retries || 0) + 1;
         }
         const view = responseView(res);
         ctx.steps[step.id] = view;
@@ -923,29 +1171,98 @@ globalThis.__netscopeFlows = (() => {
     }
   }
 
+  // Persistent collections for one run: loaded once, written back when dirty
+  // (at checkpoints and at the end), with a key index for upserts.
+  function collectionStore(initial) {
+    const map = new Map();
+    const dirty = new Set();
+    for (const name of Object.keys(initial || {})) map.set(name, { items: initial[name], index: null, key: null });
+    const ensure = (name) => {
+      if (!map.has(name)) map.set(name, { items: [], index: null });
+      return map.get(name);
+    };
+    return {
+      get(name) {
+        const c = ensure(name);
+        if (!c.index) c.index = new Map();
+        return c;
+      },
+      replace(name, items) {
+        map.set(name, { items, index: new Map() });
+        dirty.add(name);
+      },
+      touch(name) {
+        dirty.add(name);
+      },
+      // The plain object templates see as {{collections.<name>}}.
+      view(target) {
+        for (const [name, c] of map) target[name] = c.items;
+        return target;
+      },
+      dirty: () => dirty.size > 0,
+      snapshot() {
+        const out = {};
+        for (const [name, c] of map) if (c.items.length) out[name] = c.items;
+        dirty.clear();
+        return out;
+      }
+    };
+  }
+
+  // Keyed collections need their index rebuilt from stored items.
+  function indexCollections(store, flow) {
+    walk(flow.steps, (st) => {
+      if (st.type !== "collect" || !st.key) return;
+      const c = store.get(String(st.collection));
+      if (c.index.size || !c.items.length) return;
+      c.items.forEach((x, i) => {
+        const k = asText(getPath(x, st.key));
+        if (k !== "") c.index.set(k, i);
+      });
+    });
+  }
+
+  // Step results kept in a checkpoint: bodies over 256 KB are dropped so a
+  // checkpoint stays writable; later steps rarely need old huge bodies.
+  function slimSteps(steps) {
+    const out = {};
+    for (const k of Object.keys(steps)) {
+      const v = steps[k];
+      try {
+        out[k] = JSON.stringify(v).length > 262144 ? { status: v.status, ok: v.ok, note: "body dropped from checkpoint (over 256 KB)" } : v;
+      } catch (_) {}
+    }
+    return out;
+  }
+
   // deps: { http(req, step) -> result, ai(prompt) -> text, onStep(aggregate),
-  //         trigger, vars, record }
+  //         trigger, trigger_data, vars, resume, record, timeLimit, maxExec }
   async function run(flowOrId, opts) {
     const o = opts || {};
     const flow = typeof flowOrId === "string" ? await get(flowOrId) : flowOrId;
     if (!flow) throw new Error("flow not found");
+    const limits = flow.limits || {};
+    const persist = o.record !== false && !!flow.id;
 
     const startedAt = Date.now();
+    let cp = null;
+    if (o.resume && flow.id) {
+      cp = await getCheckpoint(flow.id);
+      if (!cp) throw new Error("this flow has no paused run to resume");
+    } else if (persist) await setCheckpoint(flow.id, null); // a fresh run starts over
+
     const state = o.state !== undefined ? o.state : flow.id ? await getState(flow.id) : {};
-    const ctx = { vars: Object.assign({}, flow.vars || {}, o.vars || {}), steps: {}, state, trigger: o.trigger_data || null };
-    const rt = {
-      http: o.http,
-      ai: o.ai,
-      onStep: o.onStep,
-      agg: new Map(),
-      order: [],
-      logs: [],
-      executed: 0,
-      deadline: startedAt + (o.timeLimit || RUN_TIME_LIMIT),
-      lastEmit: 0,
-      stateDirty: false,
-      subDepth: 0
+    const store = collectionStore(o.collections !== undefined ? o.collections : flow.id ? await getCollections(flow.id) : {});
+    indexCollections(store, flow);
+    const ctx = {
+      vars: cp ? cp.vars || {} : Object.assign({}, flow.vars || {}, o.vars || {}),
+      steps: cp ? cp.steps || {} : {},
+      state,
+      trigger: cp ? cp.trigger || null : o.trigger_data || null
     };
+    Object.defineProperty(ctx, "collections", { get: () => store.view({}), enumerable: true });
+
+    const timeLimit = o.timeLimit || Math.round((limits.max_minutes || RUN_TIME_LIMIT / 60000) * 60000);
     const rec = {
       id: "run_" + startedAt.toString(36),
       flowId: flow.id,
@@ -955,16 +1272,121 @@ globalThis.__netscopeFlows = (() => {
       ok: true,
       error: ""
     };
+    if (cp) rec.resumed = { from_step: cp.stepId, at_item: (cp.loop && cp.loop.next) || 0, continuation: (cp.continuations || 0) + 1 };
 
-    try {
-      const sig = await execSteps(flow.steps, ctx, rt, "", 1);
-      if (sig && sig.message) rec.note = sig.message;
-    } catch (err) {
-      rec.ok = false;
-      rec.error = String((err && err.message) || err).slice(0, 500);
+    let lastCp = 0;
+    const rt = {
+      http: o.http,
+      ai: o.ai,
+      onStep: o.onStep,
+      agg: new Map(),
+      order: [],
+      logs: [],
+      executed: 0,
+      maxExec: o.maxExec || limits.max_steps || MAX_EXEC,
+      timeLimit,
+      deadline: startedAt + timeLimit,
+      lastEmit: 0,
+      stateDirty: false,
+      subDepth: 0,
+      hostWait: new Map(),
+      coll: store,
+      resume: cp && cp.loop ? Object.assign({ stepId: cp.stepId }, cp.loop) : null,
+      cpStep: 0,
+      checkpoint: () => {}
+    };
+
+    const writeCheckpoint = async (loop, nextStep) => {
+      if (!persist) return;
+      lastCp = Date.now();
+      const cpNew = {
+        flowId: flow.id,
+        jobStartedAt: cp ? cp.jobStartedAt : startedAt,
+        continuations: cp ? (cp.continuations || 0) + 1 : 0,
+        active: true,
+        heartbeat: lastCp,
+        stepIndex: nextStep,
+        stepId: loop ? loop.stepId : (flow.steps[nextStep] || {}).id,
+        loop: loop ? { kind: loop.kind, items: loop.items, next: loop.next, results: loop.results, failures: loop.failures } : null,
+        vars: ctx.vars,
+        steps: slimSteps(ctx.steps),
+        trigger: ctx.trigger,
+        trigger_kind: cp ? cp.trigger_kind : rec.trigger
+      };
+      try {
+        await setCheckpoint(flow.id, JSON.parse(JSON.stringify(cpNew)));
+      } catch (_) {}
+      if (store.dirty()) await setCollections(flow.id, store.snapshot()).catch(() => {});
+      if (rt.stateDirty) await setState(flow.id, ctx.state);
+      rt.lastLoop = loop;
+    };
+    // Writes are chained so a slow write can never land after a newer one.
+    let cpChain = Promise.resolve();
+    const queueCheckpoint = (loop, nextStep) => (cpChain = cpChain.then(() => writeCheckpoint(loop, nextStep)).catch(() => {}));
+    // Loops call this after every finished item / pass; it writes at most
+    // every couple of seconds.
+    rt.checkpoint = (loop) => {
+      rt.lastLoop = Object.assign({}, loop);
+      if (Date.now() - lastCp >= CHECKPOINT_EVERY_MS) {
+        lastCp = Date.now();
+        queueCheckpoint(rt.lastLoop, rt.cpStep);
+      }
+    };
+
+    let startIndex = 0;
+    if (cp) {
+      startIndex = flow.steps.findIndex((st) => st.id === cp.stepId);
+      if (startIndex < 0) {
+        throw new Error(`the paused run stopped at step "${cp.stepId}", which this flow no longer has — discard the paused run and start again`);
+      }
     }
 
-    if (rt.stateDirty && flow.id && o.record !== false) await setState(flow.id, ctx.state);
+    let paused = false;
+    try {
+      for (let i = startIndex; i < flow.steps.length; i++) {
+        rt.cpStep = i;
+        rt.lastLoop = null;
+        const sig = await execStep(flow.steps[i], ctx, rt, "", 1);
+        if (persist && Date.now() - lastCp >= CHECKPOINT_EVERY_MS) await queueCheckpoint(null, i + 1);
+        if (sig) {
+          if (sig.message) rec.note = sig.message;
+          break;
+        }
+      }
+    } catch (err) {
+      const msg = String((err && err.message) || err).slice(0, 500);
+      if (err && err.budget && persist) {
+        // Out of budget: not a failure. Save where we are so it can go on.
+        paused = true;
+        rec.paused = true;
+        rec.note = msg.replace(/^step "[^"]*" failed: /, "");
+        await queueCheckpoint(rt.lastLoop, rt.cpStep);
+      } else {
+        rec.ok = false;
+        rec.error = msg;
+        // Keep progress made inside a big loop: "Resume" picks up from there.
+        if (persist && rt.lastLoop && rt.lastLoop.next > 0) {
+          await queueCheckpoint(rt.lastLoop, rt.cpStep);
+          rec.resumable = true;
+        }
+      }
+    }
+
+    await cpChain;
+    if (persist) {
+      if (paused || rec.resumable) {
+        const saved = await getCheckpoint(flow.id);
+        if (saved) {
+          saved.active = false;
+          saved.paused_reason = paused ? "budget" : "failed";
+          await setCheckpoint(flow.id, saved);
+          rec.progress = saved.loop ? { step: saved.stepId, next: saved.loop.next, of: (saved.loop.items || []).length || null } : { step: saved.stepId };
+        }
+      } else await setCheckpoint(flow.id, null);
+      if (store.dirty()) await setCollections(flow.id, store.snapshot()).catch(() => {});
+      if (rt.stateDirty) await setState(flow.id, ctx.state);
+    }
+
     rec.finishedAt = Date.now();
     rec.ms = rec.finishedAt - startedAt;
     rec.steps = rt.order;
@@ -974,6 +1396,9 @@ globalThis.__netscopeFlows = (() => {
     for (const k of Object.keys(ctx.vars)) rec.vars[k] = clipOut(ctx.vars[k]).slice(0, 500);
     rec.state = {};
     for (const k of Object.keys(ctx.state || {})) rec.state[k] = clipOut(ctx.state[k]).slice(0, 500);
+    rec.collections = {};
+    const view = store.view({});
+    for (const k of Object.keys(view)) rec.collections[k] = view[k].length;
     if (o.record !== false) await recordRun(rec);
     return rec;
   }
@@ -1001,6 +1426,11 @@ globalThis.__netscopeFlows = (() => {
     getPath,
     getState,
     setState,
+    getCollections,
+    setCollections,
+    getCheckpoint,
+    setCheckpoint,
+    MAX_CONTINUATIONS,
     matchesRequest,
     walk,
     childLists,

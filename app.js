@@ -934,6 +934,7 @@ function renderDetail() {
       ];
       if (e.finalUrl) pairs.splice(1, 0, ["Final URL", e.finalUrl]);
       if (sourceLabel(e)) pairs.push(["Sent by", sourceLabel(e) === "AI" ? "Kimi" : sourceLabel(e) === "Flow" ? "a flow" : "you, from NetScope"]);
+      if (e.sentFromPage) pairs.push(["Sent from", "inside the page " + e.sentFromPage]);
       body.appendChild(kvBlock(pairs));
       if (e.droppedHeaders && e.droppedHeaders.length) {
         body.appendChild(
@@ -1023,8 +1024,15 @@ function renderSendBox(body, curlText, fromEntry) {
   box.appendChild(ta);
   const actions = document.createElement("div");
   actions.className = "actions";
-  const send = actionBtn("Send", () => sendCurl(ta.value, send), "primary");
+  const fromPage = document.createElement("label");
+  fromPage.className = "chk";
+  fromPage.title = "Send it from inside an open tab on that site, with the site's own cookies, origin and page scripts — for endpoints that reject replays (WAF, anti-bot, CSRF)";
+  const fromPageBox = document.createElement("input");
+  fromPageBox.type = "checkbox";
+  fromPage.append(fromPageBox, document.createTextNode(" From the page"));
+  const send = actionBtn("Send", () => sendCurl(ta.value, send, fromPageBox.checked), "primary");
   actions.appendChild(send);
+  actions.appendChild(fromPage);
   actions.appendChild(actionBtn("Copy", () => copyText(ta.value, "cURL copied")));
   if (window.__netscopeAi) {
     actions.appendChild(
@@ -1041,14 +1049,14 @@ function renderSendBox(body, curlText, fromEntry) {
   ta.addEventListener("keydown", (ev) => {
     if (ev.key === "Enter" && (ev.metaKey || ev.ctrlKey)) {
       ev.preventDefault();
-      sendCurl(ta.value, send);
+      sendCurl(ta.value, send, fromPageBox.checked);
     }
   });
   body.appendChild(box);
   if (!fromEntry) setTimeout(() => ta.focus(), 0);
 }
 
-async function sendCurl(text, btn) {
+async function sendCurl(text, btn, fromPage) {
   let parsed;
   try {
     parsed = CURL().parse(text);
@@ -1061,7 +1069,7 @@ async function sendCurl(text, btn) {
     btn.textContent = "Sending…";
   }
   try {
-    const res = await rpc("http", { request: parsed, source: "you" });
+    const res = await rpc("http", { request: parsed, source: "you", context: fromPage ? "page" : "extension" });
     if (parsed.warnings && parsed.warnings.length) toast(parsed.warnings[0]);
     if (res && res.entryId) {
       // Wait for the new row to arrive over the port, then open it.

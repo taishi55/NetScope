@@ -132,6 +132,56 @@ schedule or **whenever the page makes a matching request**. Build one by asking 
 | `ai` | a Kimi prompt over earlier results (`json: true` for structured output) |
 | `stop`, `log`, `delay`, `run_flow` | end early (ok/fail), write to the run log, wait, call another flow |
 
+### Big jobs: collect, enrich, resume
+
+For jobs like "collect 180 pages of a ranking, then fetch every user's profile":
+
+```json
+{
+  "name": "Rank + profiles",
+  "vars": { "p": 1 },
+  "limits": { "max_steps": 20000, "max_minutes": 30, "auto_resume": true },
+  "steps": [
+    { "id": "pages", "type": "repeat", "max": 500, "until": "{{steps.rank.body.has_more}} == false",
+      "collect": { "save_as": "users", "value": "{{steps.rank.body.rank_list}}", "flatten": true, "unique_by": "user_id" },
+      "steps": [
+        { "id": "rank", "url": "https://example.com/api/rank?page={{vars.p}}", "context": "page" },
+        { "id": "next_page", "type": "set", "vars": { "p": "{{vars.p | add:1}}" } } ] },
+    { "id": "profiles", "type": "for_each", "items": "{{vars.users}}", "as": "u", "max": 5000, "concurrency": 5,
+      "on_item_error": "continue",
+      "steps": [
+        { "id": "prof", "url": "https://example.com/api/profile/{{u.user_id}}" },
+        { "id": "store", "type": "collect", "collection": "profiles", "items": "{{steps.prof.body}}",
+          "key": "user_id", "mode": "upsert" } ] }
+  ]
+}
+```
+
+- **Flatten and de-duplicate natively** — `collect` on `repeat` / `for_each` with `flatten` and
+  `unique_by` merges every page's array into one list; filters `flatten`, `uniq:<field>`,
+  `compact`, `chunk:n`, `group_by`, `index_by`, `count_by`, `merge` do the same inside templates.
+- **Bounded parallel requests** — `for_each.concurrency` (1–10). Each item runs in its own
+  scope, so parallel items never see each other's `{{u}}` or `{{steps.prof}}`. HTTP steps retry
+  429 / 503 three times by default, honoring `Retry-After`, and a 429 pauses every worker
+  calling that host, not just the one that got it.
+- **Persistent collections** — the `collect` step keeps results between runs in a named
+  collection: `append` (with `key`: only new keys), `upsert` (merge by key), `replace`,
+  `remove`, `clear`. Read with `{{collections.profiles}}` / `{{collections.profiles | count}}`,
+  export from the flow card as **JSON** or **CSV**, or let Kimi read them with `get_collection`.
+  Up to 100,000 items per collection.
+- **Bigger, resumable budgets** — `limits.max_steps` (default 5,000, up to 100,000) and
+  `limits.max_minutes` (default 10, up to 60). A run that runs out of budget **pauses** at a
+  checkpoint instead of failing; top-level `repeat` / `for_each` loops resume at the exact item.
+  With `auto_resume` it continues by itself about every 30 seconds until done; otherwise press
+  **Resume** on the card. A run cut short by Chrome stopping the extension resumes the same
+  way. A scheduled run continues a paused job rather than starting over.
+- **Send from the page** — `"context": "page"` on an HTTP step (or **From the page** in
+  Edit & send, or `context: "page"` for Kimi's `http_request`) sends the request from inside an
+  open tab on that site: the page's origin, its first-party cookies (`SameSite=Strict`
+  included) and the page's own `fetch` wrappers, which is where anti-bot / WAF scripts add
+  their headers. Use it when an extension replay gets 401/403 or a bot page. These requests are
+  logged once and never fire page-request triggers.
+
 - **Templates** — `{{vars.x}}`, `{{state.x}}`, `{{steps.<id>.body.<path>}}` / `.status` /
   `.headers.<name>`, `{{item.x}}` (or the loop's `as` name), `{{loop.index}}`,
   `{{trigger.body.<path>}}`, `{{now}}`, `{{uuid}}` and more. Filters transform values:
@@ -145,8 +195,8 @@ schedule or **whenever the page makes a matching request**. Build one by asking 
   own fetch/XHR matching URL, method and status; at most once per cooldown; requests NetScope
   sends never trigger). The response is `{{trigger.body}}`. Both keep working while Chrome is
   open, even with the page closed; pause either from the flow card.
-- **Limits per run** — 2,000 step executions and 4 minutes; loops default to 100 items
-  (`for_each`) or 10 passes (`repeat`). A run that fails by itself puts a red `!` on the
+- **Limits per run** — 5,000 step executions and 10 minutes by default (raise with
+  `limits`); loops default to 100 items (`for_each`) or 10 passes (`repeat`). A run that fails by itself puts a red `!` on the
   toolbar icon and a notice in the Flows tab. The last 15 runs per flow are kept, each with
   per-step results (loop bodies show how many times they ran and failed) and the run log.
 - **Copy as Markdown** on each flow copies the whole thing as a document: triggers, the step
@@ -205,10 +255,12 @@ net-hook.js ─postMessage─▶ content.js ─sendMessage─▶ background.js �
 - `<all_urls>` content scripts and host permission — the capture hook must be in place on
   whichever page you debug, and the request runner and flows must reach whichever API you
   point them at.
-- `storage` — settings, API key, flows and run history (`chrome.storage.local`), chat per tab
+- `storage`, `unlimitedStorage` — settings, API key, flows, run history and flow collections
+  (`chrome.storage.local`, which collections can grow past 10 MB), chat per tab
   (`chrome.storage.session`). The capture log lives in the extension's IndexedDB.
 - `alarms` — flow schedules.
-- `scripting` — injects the capture hook into tabs that were open before installing.
+- `scripting` — injects the capture hook into tabs that were open before installing, and runs
+  "send from the page" requests inside the site's tab.
 - `clipboardWrite` — the Copy buttons.
 
 ## Privacy

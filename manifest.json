@@ -33,6 +33,7 @@
     "storage",
     "alarms",
     "scripting",
+    "unlimitedStorage",
     "clipboardWrite"
   ],
   "host_permissions": [

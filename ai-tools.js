@@ -1211,7 +1211,8 @@ window.__netscopeAiTools = (() => {
       res = await api.rpc("http", {
         request: { method: req.method, url: req.url, headers: req.headers, body: req.body },
         source: "ai",
-        timeoutMs: a.timeout_ms
+        timeoutMs: a.timeout_ms,
+        context: a.context === "page" ? "page" : "extension"
       });
     } catch (err) {
       return JSON.stringify({ error: String(err.message || err) });
@@ -1228,6 +1229,7 @@ window.__netscopeAiTools = (() => {
       bytes: res.size || 0
     };
     if (res.url && res.url !== req.url) out.final_url = clipUrl(res.url, 400);
+    if (res.sentFrom) out.sent_from_page = clipUrl(res.sentFrom.url, 200);
     if (res.entryId) out.captured_as = "#" + res.entryId;
     if (res.error) out.error = res.error;
     if (res.droppedHeaders && res.droppedHeaders.length) {
@@ -1311,6 +1313,7 @@ window.__netscopeAiTools = (() => {
       description: f.description || "",
       steps: total,
       schedule: f.schedule && f.schedule.enabled ? `every ${f.schedule.every_minutes} min` : "manual only",
+      limits: f.limits ? `${f.limits.max_steps} step runs / ${f.limits.max_minutes} min per run${f.limits.auto_resume ? ", auto-resumes" : ""}` : undefined,
       on_request:
         t && t.enabled
           ? `when ${t.host ? "a page on " + t.host : "a page on any site"} sends ${t.method || "any method"} ${t.url_contains ? "to URLs containing " + t.url_contains : "requests"}${t.status ? " answered " + t.status : ""} (cooldown ${t.cooldown_seconds} s)`
@@ -1369,7 +1372,8 @@ window.__netscopeAiTools = (() => {
       description: a.description != null ? a.description : (existing && existing.description) || "",
       steps: a.steps ? materializeSteps(a.steps) : (existing && existing.steps) || [],
       vars: a.vars || (existing && existing.vars) || {},
-      schedule
+      schedule,
+      limits: a.limits || (existing && existing.limits) || undefined
     };
     // on_request: object sets the trigger, null removes it, omitted keeps it.
     const trig = a.on_request !== undefined ? a.on_request : existing && existing.on_request;
@@ -1424,12 +1428,18 @@ window.__netscopeAiTools = (() => {
       at: new Date(run.startedAt).toISOString(),
       ms: run.ms,
       note: run.note || undefined,
+      paused: run.paused || undefined,
+      resumable: run.resumable || undefined,
+      progress: run.progress || undefined,
+      resumed: run.resumed || undefined,
+      collections: run.collections && Object.keys(run.collections).length ? run.collections : undefined,
       step_runs: run.executed,
       steps: (run.steps || []).map((s) => ({
         id: s.id,
         type: s.type,
         ok: s.ok,
         runs: s.runs > 1 ? s.runs : undefined,
+        retries: s.retries || undefined,
         failed_runs: s.runs > 1 && s.failCount ? s.failCount : undefined,
         skipped: s.skipped || undefined,
         status: s.status,
@@ -1454,10 +1464,16 @@ window.__netscopeAiTools = (() => {
       if (!f) return JSON.stringify({ error: `no flow with id ${(args || {}).id}` });
       const runs = await api.rpc("flows.runs", { id: f.id });
       const memory = await api.rpc("flows.state", { id: f.id }).catch(() => ({}));
+      const collections = await api.rpc("flows.collections", { id: f.id }).catch(() => ({}));
+      const checkpoint = await api.rpc("flows.checkpoint", { id: f.id }).catch(() => null);
       return capResult(
         Object.assign(flowBrief(f), {
           vars: f.vars || {},
           memory: JSON.parse(scrubText(JSON.stringify(memory || {}))),
+          collections: Object.keys(collections || {}).length
+            ? JSON.parse(scrubText(JSON.stringify(Object.fromEntries(Object.entries(collections).map(([k, v]) => [k, { count: v.count, fields: v.fields }])))))
+            : undefined,
+          paused_job: checkpoint || undefined,
           steps: (f.steps || []).map(redactStep),
           recent_runs: runs.slice(0, 3).map(runBrief)
         }),
@@ -1471,8 +1487,34 @@ window.__netscopeAiTools = (() => {
   async function toolRunFlow(args) {
     const a = args || {};
     try {
-      const run = await api.rpc("flows.run", { id: a.id, vars: a.vars, trigger: "ai" });
+      const run = a.resume ? await api.rpc("flows.resume", { id: a.id }) : await api.rpc("flows.run", { id: a.id, vars: a.vars, trigger: "ai" });
       return capResult(runBrief(run), 16000);
+    } catch (err) {
+      return JSON.stringify({ error: String(err.message || err) });
+    }
+  }
+
+  async function toolGetCollection(args) {
+    const a = args || {};
+    try {
+      const page = await api.rpc("flows.collection", {
+        id: a.flow_id,
+        name: a.name,
+        offset: a.offset || 0,
+        limit: Math.min(Math.max(1, a.limit || 50), 200)
+      });
+      let items = page.items;
+      if (Array.isArray(a.fields) && a.fields.length) {
+        items = items.map((x) => {
+          const o = {};
+          for (const f of a.fields) o[f] = x && typeof x === "object" ? descend(x, f) : undefined;
+          return o;
+        });
+      }
+      return capResult(
+        JSON.parse(scrubText(JSON.stringify({ name: a.name, total: page.total, offset: page.offset, returned: items.length, items }))),
+        20000
+      );
     } catch (err) {
       return JSON.stringify({ error: String(err.message || err) });
     }
@@ -1524,6 +1566,7 @@ window.__netscopeAiTools = (() => {
       if (policy === "writes" && !isWriteMethod(req.method) && known) return null;
       return {
         kind: "http",
+        fromPage: a.context === "page",
         title: isWriteMethod(req.method)
           ? "Kimi wants to send a request that can change data"
           : known
@@ -1769,7 +1812,13 @@ window.__netscopeAiTools = (() => {
             headers: { type: "object", description: "Headers to set or replace (null removes one)." },
             body: { description: "String, or a JSON value (sent as application/json)." },
             body_max: { type: "integer", description: "Response chars to return. Default 6000, max 20000." },
-            timeout_ms: { type: "integer", description: "Default 30000, max 120000." }
+            timeout_ms: { type: "integer", description: "Default 30000, max 120000." },
+            context: {
+              type: "string",
+              enum: ["extension", "page"],
+              description:
+                "extension (default): sent by NetScope, no CORS, with the browser's cookies for the site. page: sent from inside an open tab on that site, with the page's origin, first-party cookies and its own fetch wrappers — use it when the API (often a POST) rejects extension replays (WAF / anti-bot / CSRF / origin checks)."
+            }
           },
           additionalProperties: false
         }
@@ -1799,7 +1848,10 @@ window.__netscopeAiTools = (() => {
           "TEMPLATES in any string: {{vars.x}}, {{state.x}}, {{steps.<id>.status|body.<path>|headers.<name>|text}} (latest run of that step), {{item.x}} or the loop's `as` name, {{loop.index|number|count|first|last}}, {{trigger.body.<path>|url|method|status|headers.<name>|request_body}} (on_request runs), {{now}}, {{now_iso}}, {{today}}, {{uuid}}. " +
           "FILTERS: json, json_parse, urlencode, first, last, length/count, trim, upper, lower, default:x, number, string, not, round:n, abs, add:n, sub:n, mul:n, div:n, keys, values, get:path, pluck:field, where:field=value (also != > < >= <= ~), sort:field (sort:-field = descending), reverse, unique[:field], sum[:field], min[:field], max[:field], slice:a:b, join:\", \", split:x, replace:a:b, contains:x, date, timestamp. Quote an argument to keep spaces. A JSON value that is exactly one template keeps its type. " +
           "CONDITIONS: A == B, !=, >, <, >=, <=, contains, !contains, matches <regex>, exists, missing; combine with and / or; prefix not. " +
-          "LIMITS per run: 2000 step executions, 4 minutes. Prefer filter + for_each over many hand-written steps; use state to avoid acting on the same item twice.",
+          "COLLECTIONS (results kept between runs): collect {collection: 'name', items, key: 'user_id', mode: 'append' (default; with key = only new keys) | 'upsert' (merge by key) | 'replace' | 'remove' | 'clear', flatten} — read back as {{collections.<name>}} (e.g. {{collections.profiles | count}}); get_collection reads them. " +
+          "AT SCALE: repeat/for_each take collect {save_as, value, flatten: true, unique_by: 'user_id'} to merge page arrays without manual accumulation; for_each concurrency 1–10 runs items in parallel (each iteration has its own {{item}}/{{steps.*}}); http steps retry 429/503 three times by default honoring Retry-After, pausing every worker on that host; context: 'page' sends from an open tab on the site (for WAF / anti-bot / CSRF-protected endpoints). " +
+          "LIMITS per run default 5000 step runs and 10 minutes; raise with limits {max_steps up to 100000, max_minutes up to 60, auto_resume: true}. Out of budget, a run PAUSES at a checkpoint (top-level repeat/for_each resume at the exact item) and, with auto_resume, continues by itself every ~30 s until done; run_flow {resume: true} continues manually. " +
+          "Filters also include flatten[:n|deep], compact, chunk:n, group_by:f, index_by:f, count_by:f, merge, uniq. Prefer filter + for_each over many hand-written steps; use state or keyed collections to avoid acting on the same item twice.",
         parameters: {
           type: "object",
           properties: {
@@ -1810,6 +1862,10 @@ window.__netscopeAiTools = (() => {
             vars: { type: "object", description: "Initial variables, available as {{vars.name}}." },
             every_minutes: { type: "integer", description: "Run on a schedule every N minutes (60 = hourly). Omit for manual only." },
             schedule_enabled: { type: "boolean", description: "Set false to pause a schedule." },
+            limits: {
+              type: "object",
+              description: "{max_steps (default 5000, max 100000), max_minutes (default 10, max 60), auto_resume (continue a paused run by itself)}."
+            },
             on_request: {
               type: ["object", "null"],
               description:
@@ -1827,7 +1883,11 @@ window.__netscopeAiTools = (() => {
         description: "Run a saved flow now and get each step's status, extracted variables and output. Use it right after save_flow to verify.",
         parameters: {
           type: "object",
-          properties: { id: { type: "string" }, vars: { type: "object", description: "Override variables for this run." } },
+          properties: {
+            id: { type: "string" },
+            vars: { type: "object", description: "Override variables for this run." },
+            resume: { type: "boolean", description: "Continue the flow's paused run from its checkpoint instead of starting over." }
+          },
           required: ["id"],
           additionalProperties: false
         }
@@ -1847,6 +1907,25 @@ window.__netscopeAiTools = (() => {
         name: "get_flow",
         description: "One flow's full definition (secrets masked if masking is on) and its three most recent runs.",
         parameters: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false }
+      }
+    },
+    {
+      type: "function",
+      function: {
+        name: "get_collection",
+        description: "Read items from a flow's persistent collection (built by collect steps), paginated. Use fields to return only some keys.",
+        parameters: {
+          type: "object",
+          properties: {
+            flow_id: { type: "string" },
+            name: { type: "string" },
+            offset: { type: "integer" },
+            limit: { type: "integer", description: "Default 50, max 200." },
+            fields: { type: "array", items: { type: "string" }, description: "Key paths to keep, e.g. ['user_id','profile.followers']." }
+          },
+          required: ["flow_id", "name"],
+          additionalProperties: false
+        }
       }
     },
     {
@@ -1874,12 +1953,13 @@ window.__netscopeAiTools = (() => {
     run_flow: toolRunFlow,
     list_flows: toolListFlows,
     get_flow: toolGetFlow,
+    get_collection: toolGetCollection,
     delete_flow: toolDeleteFlow
   };
 
   // Tools whose results come from the network, not the capture: their output
   // does not count against the per-run capture budget.
-  const UNBUDGETED = new Set(["http_request", "save_flow", "run_flow", "list_flows", "get_flow", "delete_flow"]);
+  const UNBUDGETED = new Set(["http_request", "save_flow", "run_flow", "list_flows", "get_flow", "get_collection", "delete_flow"]);
 
   // Never throws. Every failure becomes a tool result the model can react to,
   // because an exception here would abort the whole run.

@@ -169,11 +169,45 @@
     post({ type: "http-body", id, text, truncated, done: true, size: Math.max(bytes, len), durationMs: now() - t0 });
   }
 
+  // Requests NetScope sends *from* the page ("send from the page" replays)
+  // are tagged by their init object and are not page traffic: skip them, so
+  // they are neither logged twice nor able to fire page-request triggers.
+  // Page scripts that wrap fetch (anti-bot sensors, SDKs) often copy the
+  // init object, so a replay is also matched once by method + URL within 3 s.
+  const own = new WeakSet();
+  const pending = [];
+  const markOwn = (init, url, method) => {
+    if (init && typeof init === "object") own.add(init);
+    pending.push({ url: absUrl(url), method: String(method || "GET").toUpperCase(), until: Date.now() + 3000 });
+  };
+  const isOwn = (init, url, method) => {
+    if (init && typeof init === "object" && own.has(init)) return true;
+    const now = Date.now();
+    for (let i = pending.length - 1; i >= 0; i--) {
+      const p = pending[i];
+      if (p.until < now) pending.splice(i, 1);
+      else if (p.url === url && p.method === method) {
+        pending.splice(i, 1);
+        return true;
+      }
+    }
+    return false;
+  };
+  try {
+    Object.defineProperty(window, "__netscopeOwn", { value: markOwn });
+  } catch (_) {}
+
   const nativeFetch = window.fetch;
   if (typeof nativeFetch === "function") {
     window.fetch = new Proxy(nativeFetch, {
       apply(target, thisArg, args) {
         const [input, init] = args;
+        try {
+          const isReq0 = typeof Request !== "undefined" && input instanceof Request;
+          const u0 = absUrl(isReq0 ? input.url : input);
+          const m0 = String((init && init.method) || (isReq0 ? input.method : "GET")).toUpperCase();
+          if (isOwn(init, u0, m0)) return Reflect.apply(target, thisArg, args);
+        } catch (_) {}
         let id = null;
         let started = null;
         const t0 = now();
