@@ -27,6 +27,7 @@ globalThis.__netscopeMuse = (() => {
   const RESULT_CAP = 14000; // chars of one tool result sent to Muse
   const TURN_CAP = 60000; // chars of one message sent to Muse
   const REPLAY_CAP = 40000; // chars of earlier conversation replayed into a new side chat
+  const SESSION_TURNS = 20; // a named session (one flow's AI steps) moves to a fresh side chat after this many
   const IDLE_LIMIT = 8 * 60000; // Muse silent this long while busy: give up
   const HARD_LIMIT = 20 * 60000; // one reply, start to finish
   const inWorker = typeof window === "undefined";
@@ -61,6 +62,16 @@ globalThis.__netscopeMuse = (() => {
 
   /* ---------------------------------------------------------- threads */
 
+  // Runs fn after every earlier call with the same key has finished.
+  const locks = new Map();
+  function serial(key, fn) {
+    const run = (locks.get(key) || Promise.resolve()).then(fn, fn);
+    const tail = run.catch(() => {});
+    locks.set(key, tail);
+    tail.then(() => locks.get(key) === tail && locks.delete(key));
+    return run;
+  }
+
   function fnv(str) {
     let h = 0x811c9dc5;
     for (let i = 0; i < str.length; i++) {
@@ -73,27 +84,34 @@ globalThis.__netscopeMuse = (() => {
   const hashAnswer = (m) =>
     fnv(String((m && m.content) || "") + "|" + JSON.stringify(((m && m.tool_calls) || []).map((c) => [c.function && c.function.name, c.function && c.function.arguments])));
 
-  async function threadFor(hash) {
+  async function entryFor(key) {
     try {
       const got = await chrome.storage.local.get(THREADS_KEY);
       const map = (got && got[THREADS_KEY]) || {};
-      return map[hash] ? map[hash].thread : null;
+      return map[key] || null;
     } catch (_) {
       return null;
     }
   }
+  const threadFor = async (key) => ((await entryFor(key)) || {}).thread || null;
 
   // Only the newest answer of a side chat maps to it: after Edit or Retry
   // rewinds a conversation to an older answer, that answer no longer matches
   // and the conversation moves to a fresh side chat with a replay, instead of
   // one whose history still holds the removed turns.
-  async function rememberThread(key, thread) {
-    if (!thread || thread === "new" || thread === "main") return;
+  // Read-modify-write of one shared map: one writer at a time, or a chat
+  // answer and a flow step finishing together could drop each other's entry.
+  function rememberThread(key, thread, turns) {
+    if (!thread || thread === "new" || thread === "main") return Promise.resolve();
+    return serial("map", () => writeThread(key, thread, turns));
+  }
+
+  async function writeThread(key, thread, turns) {
     try {
       const got = await chrome.storage.local.get(THREADS_KEY);
       const map = (got && got[THREADS_KEY]) || {};
       if (!key.startsWith("session:")) for (const k of Object.keys(map)) if (map[k].thread === thread && !k.startsWith("session:")) delete map[k];
-      map[key] = { thread, t: Date.now() };
+      map[key] = { thread, t: Date.now(), n: turns || 1 };
       const keys = Object.keys(map);
       if (keys.length > MAX_THREADS) {
         keys.sort((a, b) => map[a].t - map[b].t);
@@ -119,21 +137,26 @@ globalThis.__netscopeMuse = (() => {
       .join("\n\n");
   }
 
-  function header(system, tools, forceTool) {
+  // standalone: every message is its own task (AI steps in flows).
+  function header(system, tools, forceTool, standalone) {
     const lines = [
       "[NetScope] This side chat is run by NetScope, a browser extension the user installed. You are its reasoning engine for this conversation.",
       "",
       "Rules for this side chat:",
-      "- Work only with what NetScope sends you and the NetScope tools listed below. Do not use your own computer, browser, web search, email, memory, files, scheduled tasks or approvals for this conversation, and do not ask the user to approve anything in Muse.",
+      "- Treat it as a fresh, standalone conversation. Do not look up or use your memories, the user's profile, or anything from other chats; nothing outside this side chat applies here.",
+      "- Do not save anything from this side chat to your memory. It is captured web traffic and API work for websites, not information about the user.",
+      "- Work only with what NetScope sends you and the NetScope tools listed below. Do not use your own computer, browser, web search, email, files, scheduled tasks or approvals for this conversation, and do not ask the user to approve anything in Muse.",
       "- Every message here comes from NetScope. Each starts with a reference like (ns-1a2b3c); ignore it."
     ];
+    if (standalone) lines.push("- Each message is a separate task. Ignore earlier messages in this side chat.");
     if (tools && tools.length) {
       lines.push(
         "- To call NetScope tools, reply with one or more blocks exactly like this, each holding one JSON object:",
         "```tool",
         '{"name": "list_endpoints", "arguments": {"limit": 20}}',
         "```",
-        "  Put no text after your last tool block. You may call several tools in one reply. NetScope runs them and sends back \"NetScope tool results\".",
+        "  Put no text after your last tool block. NetScope runs them and sends back \"NetScope tool results\".",
+        "- Each of your replies uses part of the user's Muse usage limit, so put tool calls that don't depend on each other in the same reply instead of one per reply.",
         "- When you have the final answer, reply in Markdown with no tool block. Never invent a tool result."
       );
       if (forceTool) lines.push("- Start by calling a tool.");
@@ -295,7 +318,13 @@ globalThis.__netscopeMuse = (() => {
 
   // Same contract as the Kimi transport in ai-client.js: resolves to
   // { assistantMessage, toolCalls, finishReason, usage, reasoning }.
-  async function chat(opts) {
+  // A flow's AI steps can run in parallel (for_each concurrency); they take
+  // turns per flow so they agree on one side chat and count turns correctly.
+  function chat(opts) {
+    return opts && opts.museSession ? serial("session:" + opts.museSession, () => chatNow(opts)) : chatNow(opts);
+  }
+
+  async function chatNow(opts) {
     const msgs = opts.messages || [];
     const tools = opts.tools || [];
     const known = new Set(tools.map((t) => (t.function || t).name));
@@ -308,16 +337,19 @@ globalThis.__netscopeMuse = (() => {
       }
     }
     const tail = msgs.slice(last + 1).filter((m) => m.role !== "system");
-    // A named session (AI steps in flows) reuses one side chat; every message
-    // in it is self-contained, so the side chat's history doesn't matter.
+    // A named session (one flow's AI steps) reuses a side chat for a while;
+    // every message in it is self-contained and says so, and the session moves
+    // to a fresh side chat every SESSION_TURNS messages so old tasks can't pile up.
     const named = opts.museSession ? "session:" + opts.museSession : "";
+    const session = named ? await entryFor(named) : null;
+    const sessionTurns = session && session.thread && (session.n || 1) < SESSION_TURNS ? session.n || 1 : 0;
     // Keyed by the conversation's first question too, so two chats whose last
     // answers happen to match never share a side chat.
     const firstUser = msgs.find((m) => m.role === "user");
     const convKey = (answer) => fnv(String((firstUser && firstUser.content) || "").slice(0, 4000)) + hashAnswer(answer);
-    let thread = named ? await threadFor(named) : last >= 0 ? await threadFor(convKey(msgs[last])) : null;
+    let thread = named ? (sessionTurns ? session.thread : null) : last >= 0 ? await threadFor(convKey(msgs[last])) : null;
     let text;
-    if (named) text = header(system, tools, false) + "\n\n=== Request ===\n" + renderTail(tail);
+    if (named) text = header(system, tools, false, true) + "\n\n=== Request ===\n" + renderTail(tail);
     else if (thread) text = renderTail(tail);
     else {
       text = header(system, tools, opts.tool_choice === "required");
@@ -351,7 +383,7 @@ globalThis.__netscopeMuse = (() => {
       if (!p.content && !p.calls.length) throw Object.assign(museError("empty", "Muse's reply was empty. Check the muse.ai tab, then press Continue."), { retryable: false });
       const message = { role: "assistant", content: p.content };
       if (p.calls.length) message.tool_calls = p.calls;
-      await rememberThread(named || convKey(message), thread);
+      await rememberThread(named || convKey(message), thread, named ? sessionTurns + 1 : 1);
       return { assistantMessage: message, toolCalls: p.calls, finishReason: p.calls.length ? "tool_calls" : "stop", usage: null, reasoning: "" };
     }
   }

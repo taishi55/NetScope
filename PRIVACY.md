@@ -102,9 +102,12 @@ After that, the same data listed for Kimi above — your question, the conversat
 the capture the model asks for, the results of requests and flow runs, a capture summary, and the
 prompts of AI steps in flows — is typed by NetScope into a **side chat in your Muse account**: a
 small script on `https://muse.ai` fills the message box and presses Send, and Muse's reply is read
-back from that tab. Each NetScope conversation gets its own side chat; AI steps in flows share
-one. These messages stay in your Muse history and are governed by Meta's terms and privacy policy
-for Muse. **Only use Muse on traffic you are permitted to share.**
+back from that tab. Each NetScope conversation gets its own side chat, and so does each flow's
+AI steps. These messages stay in your Muse history and are governed by Meta's terms and privacy
+policy for Muse, including its "Help improve our AI models" setting (Muse → Settings → Data
+controls), which decides whether Meta may use them to train its models. NetScope asks Muse not to
+save anything from these side chats to its memory, but cannot switch Muse's memory off.
+**Only use Muse on traffic you are permitted to share.**
 
 NetScope only presses Muse's Send and Stop buttons. It never approves actions Muse asks you to
 approve and reads nothing from your Muse account beyond the replies in its own side chats. It

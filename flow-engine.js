@@ -1463,7 +1463,7 @@ globalThis.__netscopeFlows = (() => {
       }
 
       case "ai": {
-        if (!rt.ai) throw stepFail("ai", "AI steps need the Kimi API key set up");
+        if (!rt.ai) throw stepFail("ai", "AI steps need an AI connected in Settings (Kimi or Muse)");
         let prompt = render(step.prompt, ctx);
         if (step.json) prompt += "\n\nReply with raw JSON only.";
         const text = await rt.ai(prompt);
@@ -1472,7 +1472,7 @@ globalThis.__netscopeFlows = (() => {
           const t = text.trim().replace(/^```(?:json)?\s*|\s*```$/g, "");
           if (t.startsWith("{") || t.startsWith("[")) body = JSON.parse(t);
         } catch (_) {
-          if (step.json) throw stepFail("ai", "Kimi did not return valid JSON");
+          if (step.json) throw stepFail("ai", "The AI did not return valid JSON");
         }
         ctx.steps[step.id] = { text, body, ok: true, status: 200 };
         r.output = clipOut(text);

@@ -79,8 +79,14 @@ How it works:
   so a hidden or minimized tab does not stall a reply.
 - Each NetScope conversation gets its own Muse **side chat**, so your main Muse chat stays
   clean. A follow-up sends only the new turn; Muse keeps the history. Editing or retrying an
-  earlier question starts a fresh side chat with a condensed replay. AI steps inside flows
-  share one side chat.
+  earlier question starts a fresh side chat with a condensed replay. **New chat** in NetScope
+  always starts a new side chat, so nothing from an earlier conversation carries over.
+- Each flow's AI steps get their own side chat too, marked so every step is a separate task,
+  and renewed every 20 steps so old items can't pile up and confuse later ones.
+- Muse also has account-wide memory, which can't be switched off per chat. Every side chat
+  therefore tells Muse to treat it as a fresh conversation: not to use its memories or other
+  chats, and not to save anything from it to memory. That is an instruction, not a switch —
+  if Muse ever mixes in something personal, start a new chat or remove the memory in Muse.
 - Muse has no function-calling API, so the first message of each side chat lists NetScope's
   tools and Muse calls them with fenced ` ```tool ` JSON blocks. NetScope runs them exactly as
   it does for Kimi (same tools, same approval setting) and sends the results back.
@@ -88,7 +94,9 @@ How it works:
   asks you to approve, and never touches anything else on the page.
 
 Limits: the conversation lives in your Muse history; Muse is only available where Meta offers
-it; Muse's own usage limits apply; and if Chrome discards or freezes the tab (Memory or Energy
+it; Muse's own usage limits apply (every tool step is a Muse message, so Muse is asked to batch
+independent calls); Meta may use your Muse chats to improve its models unless you turn off
+**Help improve our AI models** in Muse → Settings → Data controls; and if Chrome discards or freezes the tab (Memory or Energy
 Saver), NetScope reloads it or tells you what to do. Muse has no thinking-depth setting or
 token meter.
 

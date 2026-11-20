@@ -659,13 +659,14 @@ async function maybeTrigger(tabId, e) {
   }
 }
 
-async function aiForFlows(prompt) {
+async function aiForFlows(prompt, flowId) {
   const s = await AI.loadSettings();
   if (!AI.isReady(s)) throw new Error("AI steps need an AI connected in NetScope settings (Kimi or Muse)");
   const turn = await AI.chat({
     stream: false,
     reasoning_effort: "low",
-    museSession: "flows", // with Muse: one side chat for all flow steps, not one per step
+    // With Muse: each flow gets its own side chat (renewed every 20 steps), not one per step.
+    museSession: "flow:" + (flowId || "any"),
     messages: [
       {
         role: "system",
@@ -698,7 +699,7 @@ async function runFlow(id, opts) {
       resume: !!o.resume,
       http: (req, step) =>
         runHttp(req, { tabId, source: "flow", timeoutMs: step && step.timeout_ms, context: step && step.context === "page" ? "page" : "extension" }),
-      ai: aiForFlows,
+      ai: (prompt) => aiForFlows(prompt, id),
       onStep: (sr) => {
         if (Number.isInteger(tabId)) broadcast(tabId, { type: "flow-step", flowId: id, step: sr });
         // Every open Flows tab shows a running job's progress, not just the
