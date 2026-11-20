@@ -97,6 +97,7 @@
         <button role="tab" id="tab-flows" data-view="flows" aria-selected="false" aria-controls="view-flows">
           Flows <span class="count" id="flowsCount"></span>
         </button>
+        <button role="tab" id="tab-seo" data-view="seo" aria-selected="false" aria-controls="view-seo" title="Compare your site with Google's top 2 for each search query">SEO</button>
         <button role="tab" id="tab-docs" data-view="docs" aria-selected="false" aria-controls="view-docs">
           Docs <span class="count" id="docsCount"></span>
         </button>
@@ -277,6 +278,27 @@
         </section>
 
         <!-- ============================================================ Docs -->
+        <!-- ============================================================= SEO -->
+        <section id="view-seo" class="view" role="tabpanel" aria-labelledby="tab-seo">
+          <form id="seoForm" class="pane-bar seo-form" autocomplete="off" novalidate>
+            <div class="seo-fields">
+              <label class="field seo-domain"><span>Your site</span><input id="seoDomain" type="text" inputmode="url" placeholder="example.com" spellcheck="false" /></label>
+              <label class="field seo-small"><span>Language</span><input id="seoHl" type="text" maxlength="5" placeholder="auto" spellcheck="false" title="Google's hl, e.g. en, ja, de" /></label>
+              <label class="field seo-small"><span>Country</span><input id="seoGl" type="text" maxlength="2" placeholder="auto" spellcheck="false" title="Google's gl, e.g. us, jp, gb" /></label>
+            </div>
+            <label class="field"><span>Search queries, one per line</span><textarea id="seoQueries" rows="3" spellcheck="false" placeholder="Leave empty to pick them from your site"></textarea></label>
+            <div class="actions">
+              <button id="seoRun" class="primary" type="submit">Compare with Google's top 2</button>
+              <button id="seoImport" type="button">Import Search Console CSV</button>
+              <input id="seoFile" type="file" accept=".csv,text/csv" hidden aria-label="Choose a Search Console Queries.csv export" />
+              <button id="seoStop" type="button" hidden>Stop</button>
+              <select id="seoHistory" aria-label="Earlier comparisons" hidden></select>
+            </div>
+            <p id="seoStatus" class="pane-stats" aria-live="polite"></p>
+          </form>
+          <div id="seoBody"></div>
+        </section>
+
         <section id="view-docs" class="view" role="tabpanel" aria-labelledby="tab-docs">
           <div id="docsRoot"></div>
         </section>
@@ -330,9 +352,11 @@
             <select id="aiApproval">
               <option value="never">Never — autopilot (default)</option>
               <option value="writes">For changes: POST, PUT, PATCH, DELETE, new hosts and schedules</option>
-              <option value="all">For every request it sends</option>
+              <option value="all">For every request it sends and every click</option>
             </select>
           </label>
+          <label class="chk"><input type="checkbox" id="aiConfirmRisky" /> <span>Ask before clicks that buy, pay, delete, send or publish — even on autopilot</span></label>
+          <p class="hint">When <span class="ai-name">Kimi</span> uses your tabs, it never types into password, card or one-time-code fields, and leaves robot checks and consent banners to you.</p>
           <label class="field">Max tool calls per answer
             <input id="aiIterations" type="number" min="1" max="200" step="1" />
           </label>
@@ -409,6 +433,8 @@
     <script src="curl.js"></script>
     <script src="ai-tools.js"></script>
     <script src="ai-inspect-tools.js"></script>
+    <script src="ai-browser-tools.js"></script>
+    <script src="seo-core.js"></script>
     <script src="ai-client.js"></script>
     <script src="muse-client.js"></script>
     <script src="ai-agent.js"></script>
@@ -419,6 +445,7 @@
     <script src="docs-ui.js"></script>
     <script src="console-ui.js"></script>
     <script src="app-ui.js"></script>
+    <script src="seo-ui.js"></script>
     <script src="boot.js"></script>
   </body>
 </html>

@@ -260,6 +260,15 @@ function onPortMessage(msg) {
     case "prefs":
       ui.preserve.checked = !!(msg.prefs && msg.prefs.preserve);
       break;
+    case "agent-stop": {
+      // Stop on the "NetScope AI is using this tab" bar of any tab.
+      const ai = window.__netscopeAi;
+      if (ai && ai.isRunning && ai.isRunning()) {
+        ai.cancel();
+        toast("Stopped the AI");
+      }
+      break;
+    }
     case "flows-changed":
     case "flow-progress":
     case "flow-step":
@@ -415,6 +424,7 @@ function switchView(view) {
   if (window.__netscopeDocsUi && view === "docs") window.__netscopeDocsUi.onShown();
   if (window.__netscopeConsoleUi && view === "console") window.__netscopeConsoleUi.onShown();
   if (window.__netscopeAppUi && view === "app") window.__netscopeAppUi.onShown();
+  if (window.__netscopeSeoUi && view === "seo") window.__netscopeSeoUi.onShown();
   syncInspectTab();
 }
 

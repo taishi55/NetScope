@@ -12,7 +12,7 @@
  */
 "use strict";
 
-importScripts("curl.js", "bg-store.js", "bg-network.js", "ai-client.js", "muse-client.js", "flow-engine.js", "page-inspect.js", "bg-sources.js");
+importScripts("curl.js", "bg-store.js", "bg-network.js", "ai-client.js", "muse-client.js", "flow-engine.js", "page-inspect.js", "bg-sources.js", "page-actor.js", "seo-extract.js", "bg-browser.js");
 
 const Store = globalThis.__netscopeStore;
 const Flows = globalThis.__netscopeFlows;
@@ -307,6 +307,13 @@ function handleEvent(tabId, frameId, ev) {
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || msg.__netscope__ !== 1 || !msg.event || !sender.tab || !Number.isInteger(sender.tab.id)) return;
+  // Stop on the "NetScope AI is using this tab" bar: every open popup stops its run.
+  if (msg.event.type === "agent-stop") {
+    const driver = globalThis.__netscopeBrowser.driverOf(sender.tab.id);
+    if (driver != null) broadcast(driver, { type: "agent-stop", tabId: sender.tab.id });
+    else broadcastAll({ type: "agent-stop", tabId: sender.tab.id });
+    return;
+  }
   const p = handleEvent(sender.tab.id, sender.frameId || 0, msg.event);
   if (msg.event.type === "page") {
     p.then((r) => sendResponse(r || { ui: "hidden" })).catch(() => sendResponse({ ui: "hidden" }));
@@ -1191,8 +1198,12 @@ async function handleRpc(tabId, method, p) {
       await chrome.storage.local.remove(ALERT_KEY);
       chrome.action.setBadgeText({ text: "" }).catch(() => {});
       return true;
-    default:
+    default: {
+      // Tabs, clicks, screenshots and the SEO tab (bg-browser.js).
+      const r = globalThis.__netscopeBrowser.handle(tabId, method, p);
+      if (r) return r;
       throw new Error("unknown method " + method);
+    }
   }
 }
 

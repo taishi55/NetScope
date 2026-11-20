@@ -148,8 +148,83 @@
       sendResponse({ mode });
     } else if (msg.cmd === "ping") {
       sendResponse({ ok: true, mode });
+    } else if (msg.cmd === "agent") {
+      showAgent(msg);
+      sendResponse({ ok: true });
+    } else if (msg.cmd === "capture") {
+      // Screenshots show the page, not NetScope's own popup or bar. The hosts'
+      // :host / all:initial rules win over their inline styles, so hide what
+      // is inside the shadow roots.
+      for (const el of [box].concat(agent ? agent.parts : [])) if (el) el.style.setProperty("visibility", msg.hide ? "hidden" : "visible", "important");
+      sendResponse({ ok: true });
     }
   });
+
+  /* ------------------------------------------- "AI is using this tab" bar */
+
+  // Shown while the AI clicks and types here: an amber edge, a bar with
+  // Stop, and a ring where each click lands. Hides itself when idle.
+  const AGENT_CSS = `
+    .edge { position: fixed; inset: 0; border: 2px solid #f5a524; pointer-events: none; }
+    .bar { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 10px;
+      padding: 5px 5px 5px 12px; border-radius: 999px; background: #111827; color: #f9fafb; pointer-events: auto;
+      font: 500 12px/1.2 system-ui, -apple-system, "Segoe UI", sans-serif; box-shadow: 0 4px 16px rgba(0,0,0,.25); }
+    .bar i { width: 7px; height: 7px; border-radius: 50%; background: #f5a524; }
+    .bar button { all: unset; cursor: pointer; padding: 4px 12px; border-radius: 999px; background: #f5a524; color: #111827; font-weight: 650; }
+    .bar button:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+    .ring { position: fixed; width: 26px; height: 26px; margin: -13px 0 0 -13px; border: 2px solid #f5a524; border-radius: 50%;
+      pointer-events: none; animation: ring .7s ease-out forwards; }
+    @keyframes ring { from { transform: scale(.4); opacity: 1; } to { transform: scale(1.6); opacity: 0; } }
+    @media (prefers-reduced-motion: reduce) { .ring { animation: none; opacity: .9; } }
+  `;
+  let agent = null;
+  let agentIdle = 0;
+
+  function showAgent(msg) {
+    if (!msg.on) return hideAgent();
+    if (!agent || !agent.host.isConnected) {
+      const h = document.createElement("netscope-agent");
+      h.style.cssText = "all: initial !important; position: fixed !important; inset: 0 !important; z-index: 2147483646 !important; pointer-events: none !important;";
+      const shadow = h.attachShadow({ mode: "closed" });
+      const style = document.createElement("style");
+      style.textContent = AGENT_CSS;
+      const edge = document.createElement("div");
+      edge.className = "edge";
+      const bar = document.createElement("div");
+      bar.className = "bar";
+      bar.setAttribute("role", "status");
+      const dot = document.createElement("i");
+      const label = document.createElement("span");
+      label.textContent = "NetScope AI is using this tab";
+      const stop = document.createElement("button");
+      stop.type = "button";
+      stop.textContent = "Stop";
+      stop.addEventListener("click", () => {
+        send({ type: "agent-stop" });
+        hideAgent();
+      });
+      bar.append(dot, label, stop);
+      shadow.append(style, edge, bar);
+      (document.documentElement || document).appendChild(h);
+      agent = { host: h, shadow, parts: [edge, bar] };
+    }
+    if (Number.isFinite(msg.x) && Number.isFinite(msg.y)) {
+      const ring = document.createElement("div");
+      ring.className = "ring";
+      ring.style.left = msg.x + "px";
+      ring.style.top = msg.y + "px";
+      agent.shadow.appendChild(ring);
+      setTimeout(() => ring.remove(), 900);
+    }
+    clearTimeout(agentIdle);
+    agentIdle = setTimeout(hideAgent, 8000);
+  }
+
+  function hideAgent() {
+    clearTimeout(agentIdle);
+    if (agent && agent.host.isConnected) agent.host.remove();
+    agent = null;
+  }
 
   // A new document in this tab. The background clears the log unless
   // "Keep logs on reload" is on, and says whether the popup was open so a

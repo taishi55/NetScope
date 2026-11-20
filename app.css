@@ -2998,3 +2998,284 @@ body:not(.mode-large):not(.standalone) .app-bar {
 .suggest button:disabled {
   opacity: 0.55;
 }
+
+/* ------------------------------------------------------------------- SEO */
+
+#seoBody {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 14px 20px;
+}
+
+.seo-form .seo-fields {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.seo-form .seo-domain {
+  flex: 1 1 220px;
+}
+
+.seo-form .seo-small {
+  flex: 0 0 76px;
+}
+
+.seo-form input,
+.seo-form textarea {
+  width: 100%;
+}
+
+.seo-form textarea {
+  resize: vertical;
+  min-height: 52px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.seo-form .actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+#seoHistory {
+  margin-left: auto;
+  max-width: 240px;
+}
+
+#seoStatus {
+  margin: 0;
+  min-height: 16px;
+}
+
+.seo-empty {
+  max-width: 62ch;
+}
+
+.seo-empty h2,
+.seo-head h2 {
+  font-size: 15px;
+  margin: 2px 0 6px;
+}
+
+.seo-empty p {
+  margin: 0 0 10px;
+  color: var(--ink-2);
+}
+
+.seo-steps {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--ink-2);
+}
+
+.seo-steps li + li {
+  margin-top: 4px;
+}
+
+.seo-wait {
+  color: var(--ink-2);
+}
+
+.seo-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.seo-summary .readout {
+  margin-bottom: 10px;
+}
+
+.seo-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.seo-table .c-sc {
+  width: 84px;
+}
+
+.seo-table td.seo-q {
+  white-space: normal;
+}
+
+.seo-query {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.seo-table .seo-gap {
+  display: block;
+  margin-top: 2px;
+  color: var(--ink-2);
+  line-height: 1.4;
+}
+
+.seo-table .seo-gap.seo-high {
+  color: var(--server-err);
+}
+
+.seo-sub {
+  display: block;
+  color: var(--ink-3);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.seo-table tr.seo-row[role="button"] {
+  cursor: pointer;
+}
+
+.seo-table tr.seo-row:focus-visible td {
+  outline: 2px solid var(--signal-ink);
+  outline-offset: -2px;
+}
+
+.seo-table tr.seo-row[aria-expanded="true"] td {
+  background: var(--surface-2);
+}
+
+.seo-score {
+  display: block;
+  font-size: 14px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.seo-score.good {
+  color: var(--ok);
+}
+
+.seo-score.bad {
+  color: var(--server-err);
+}
+
+.dt tr.seo-detail > td {
+  white-space: normal;
+  padding: 10px 12px 14px;
+  background: var(--bg);
+}
+
+.dt tr.seo-detail:hover > td {
+  background: var(--bg);
+}
+
+.seo-more h3 {
+  font-size: 12px;
+  margin: 10px 0 6px;
+  color: var(--ink-2);
+  font-weight: 600;
+}
+
+.seo-more h3:first-child {
+  margin-top: 0;
+}
+
+.seo-gaps,
+.seo-paa {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.seo-gaps li,
+.seo-paa li {
+  padding: 3px 0;
+  line-height: 1.45;
+}
+
+.seo-gaps .sev {
+  display: inline-block;
+  min-width: 52px;
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--ink-3);
+}
+
+.seo-gaps .sev-high .sev {
+  color: var(--server-err);
+}
+
+.seo-gaps .sev-medium .sev {
+  color: var(--client-err);
+}
+
+.seo-paa li::before {
+  content: "✓";
+  display: inline-block;
+  width: 18px;
+  color: var(--ok);
+  font-weight: 700;
+}
+
+.seo-paa li.miss::before {
+  content: "–";
+  color: var(--ink-3);
+}
+
+.seo-sig {
+  table-layout: auto;
+}
+
+.seo-sig th[scope="row"] {
+  position: static;
+  background: transparent;
+  color: var(--ink-2);
+  font-weight: 500;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--line);
+}
+
+.seo-sig td {
+  white-space: normal;
+  max-width: 260px;
+  overflow-wrap: anywhere;
+}
+
+.seo-sig td.worse {
+  color: var(--server-err);
+  font-weight: 560;
+}
+
+.seo-urls {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0 0 6px;
+  font-size: 12px;
+}
+
+.seo-urls a {
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+.seo-feats {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+.seo-note {
+  max-width: 70ch;
+}
+
+/* ------------------------------------------------- AI screenshots in chat */
+
+.shot-card img.shot {
+  display: block;
+  width: 100%;
+  max-width: 360px;
+  height: auto;
+  margin-top: 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}

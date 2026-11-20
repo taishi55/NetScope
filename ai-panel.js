@@ -82,6 +82,17 @@ window.__netscopeAi = (() => {
   }
 
   let saveTimer = 0;
+  // Screenshot thumbnails are kept only on the newest few saved steps.
+  function keepLastShots(list, n) {
+    let seen = 0;
+    const outList = list.slice();
+    for (let i = outList.length - 1; i >= 0; i--) {
+      if (!outList[i].img) continue;
+      if (++seen > n) outList[i] = Object.assign({}, outList[i], { img: undefined });
+    }
+    return outList;
+  }
+
   function chatPayload() {
     const first = transcript.find((x) => x.t === "user");
     if (!first || !conv) return null; // nothing worth keeping yet
@@ -91,8 +102,8 @@ window.__netscopeAi = (() => {
       createdAt: conv.createdAt,
       updatedAt: Date.now(),
       page: conv.page,
-      transcript: transcript.slice(-500),
-      messages: AGENT().getMessages(),
+      transcript: keepLastShots(transcript.slice(-500), 4),
+      messages: AGENT().messagesForSave ? AGENT().messagesForSave() : AGENT().getMessages(),
       tokens: sessionTokens,
       running
     };
@@ -713,6 +724,22 @@ window.__netscopeAi = (() => {
       return;
     }
 
+    if (item.name === "take_screenshot" && item.img) {
+      const card = node("div", "req-card shot-card");
+      const line = node("div", "req-line");
+      line.appendChild(node("span", "method", "seen"));
+      line.appendChild(node("span", "url", (j && (j.title || j.url)) || "Screenshot"));
+      line.appendChild(node("span", "meter", `${item.ms} ms`));
+      card.appendChild(line);
+      const im = document.createElement("img");
+      im.className = "shot";
+      im.src = item.img;
+      im.alt = `What ${aiName()} saw: ${(j && (j.title || j.url)) || "the page"}`;
+      card.appendChild(im);
+      place(card);
+      return;
+    }
+
     if ((item.name === "write_doc" || item.name === "edit_doc") && j && j.saved) {
       const card = node("div", "req-card doc-card");
       const line = node("div", "req-line");
@@ -749,9 +776,10 @@ window.__netscopeAi = (() => {
     setStatus(name === "http_request" ? "Sending request…" : name === "run_flow" ? "Running flow…" : `Running ${name}…`);
   }
 
-  function endTool(name, out, ms) {
+  function endTool(name, out, ms, imgs) {
     clearStatus();
     const item = { t: "tool", name, args: toolArgs, out: out.length > 12000 ? out.slice(0, 12000) : out, ms };
+    if (imgs && imgs[0] && imgs[0].thumb) item.img = imgs[0].thumb;
     renderItem(item);
     record(item);
     if (curRun) {
@@ -765,6 +793,7 @@ window.__netscopeAi = (() => {
 
   function approvalLine(ask) {
     if (ask.kind === "http") return `${ask.method} ${ask.url}`;
+    if (ask.kind === "browser") return ask.line || "";
     if (ask.flow) return `${ask.flow.name} · ${(ask.flow.steps || []).length} steps`;
     return "";
   }
@@ -788,6 +817,10 @@ window.__netscopeAi = (() => {
         if (ask.body) preview += (preview ? "\n\n" : "") + (typeof ask.body === "string" ? ask.body : JSON.stringify(ask.body, null, 2));
         if (parts.length) card.appendChild(node("p", "why", parts.join(" ")));
         if (preview) card.appendChild(node("pre", "", preview.slice(0, 3000)));
+      } else if (ask.kind === "browser") {
+        if (ask.line) card.appendChild(node("div", "req-line", ask.line));
+        if (ask.why) card.appendChild(node("p", "why", ask.why));
+        if (ask.detail) card.appendChild(node("pre", "", ask.detail.slice(0, 1500)));
       } else if (ask.flow) {
         const f = ask.flow;
         if (f.description) card.appendChild(node("p", "why", f.description));
@@ -796,9 +829,9 @@ window.__netscopeAi = (() => {
       }
 
       const actions = node("div", "actions");
-      const yes = node("button", ask.kind === "flow-delete" ? "danger" : "primary", ask.kind === "http" ? "Send request" : ask.kind === "flow-run" ? "Run flow" : ask.kind === "flow-delete" ? "Delete flow" : "Save flow");
+      const yes = node("button", ask.kind === "flow-delete" ? "danger" : "primary", ask.kind === "http" ? "Send request" : ask.kind === "browser" ? "Allow" : ask.kind === "flow-run" ? "Run flow" : ask.kind === "flow-delete" ? "Delete flow" : "Save flow");
       yes.type = "button";
-      const no = node("button", "", ask.kind === "http" ? "Don't send" : "Cancel");
+      const no = node("button", "", ask.kind === "http" ? "Don't send" : ask.kind === "browser" ? "Don't allow" : "Cancel");
       no.type = "button";
       actions.append(yes, no);
       card.appendChild(actions);
@@ -1152,6 +1185,7 @@ window.__netscopeAi = (() => {
     el.tier.value = settings.tier;
     el.maxReply.value = String(settings.maxReply);
     el.redact.checked = !!settings.redact;
+    el.confirmRisky.checked = settings.confirmRisky !== false;
     el.pii.checked = !!settings.redactPii;
     el.pii.disabled = !settings.redact;
     el.iter.value = String(settings.maxIterations || CLIENT().DEFAULTS.maxIterations);
@@ -1319,6 +1353,7 @@ window.__netscopeAi = (() => {
         model: el.modelSetting.value,
         approval: el.approval.value,
         approvalSet: true,
+        confirmRisky: el.confirmRisky.checked,
         redact: el.redact.checked,
         redactPii: el.pii.checked,
         maxIterations: Math.min(CLIENT().MAX_ITERATIONS, Math.max(1, Number(el.iter.value) || CLIENT().DEFAULTS.maxIterations)),
@@ -1345,6 +1380,7 @@ window.__netscopeAi = (() => {
           approvalSet: true,
           tier: el.tier.value,
           maxReply: el.maxReply.value,
+          confirmRisky: el.confirmRisky.checked,
           redact: el.redact.checked,
           redactPii: el.pii.checked,
           maxIterations: Math.min(CLIENT().MAX_ITERATIONS, Math.max(1, Number(el.iter.value) || CLIENT().DEFAULTS.maxIterations)),
@@ -1401,7 +1437,7 @@ window.__netscopeAi = (() => {
       historyList: "historyList", dataExport: "dataExport", dataImport: "dataImport", dataFile: "dataFile",
       dataChats: "dataChats", dataFlows: "dataFlows", dataDocs: "dataDocs", dataSettings: "dataSettings", dataKey: "dataKey",
       connectText: "aiConnectText", museStatus: "museStatus", museOpen: "museOpen", museCheck: "museCheck",
-      redact: "aiRedact", pii: "aiPii", consent: "aiConsent", consentText: "aiConsentText", save: "aiSave",
+      redact: "aiRedact", pii: "aiPii", confirmRisky: "aiConfirmRisky", consent: "aiConsent", consentText: "aiConsentText", save: "aiSave",
       test: "aiTest", forget: "aiForget"
     };
     for (const k of Object.keys(ids)) el[k] = $(ids[k]);

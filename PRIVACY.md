@@ -1,6 +1,6 @@
 # NetScope — Privacy Policy
 
-**Last updated: November 19, 2026**
+**Last updated: November 20, 2026**
 
 ## Summary
 
@@ -8,13 +8,16 @@ NetScope captures the API traffic of the pages you open it on and keeps it on yo
 machine. It has no analytics, no telemetry, no error reporting and no accounts, and it never
 contacts the developer.
 
-Data leaves your machine in exactly two ways, both started by you:
+Data leaves your machine in exactly three ways, all started by you:
 
 1. **An AI assistant (optional): Kimi or Muse** — when you have connected one, consented, and
    ask a question, excerpts of the captured traffic are sent to it: to Moonshot AI for Kimi, or,
    for Muse, typed into a side chat of your own Muse account at muse.ai (Meta).
 2. **Requests you send** — when you, the AI at your request, or a flow you saved sends an HTTP
    request, it goes to the URL that request names, like any request your browser makes.
+3. **SEO comparisons you start** — the queries you compare are searched on Google from a
+   background tab of your own browser, and the result pages you compare are opened in it, like
+   pages you visit yourself.
 
 ## What NetScope captures
 
@@ -90,6 +93,12 @@ NetScope sends to `https://api.moonshot.ai/v1/chat/completions`:
   performance reports, feature flags, recorded page requests with their headers, and code from
   the page's scripts and source maps,
 - the results of requests and flow runs it performs for you,
+- when it uses your tabs for a task: the titles and addresses of your open tabs when it lists
+  them, the page map of the tab it acts on (titles, headings, the
+  names and values of visible controls — never the contents of password, card or one-time-code
+  fields) and **screenshots** of that tab's visible area,
+- for SEO work: the queries, Google's result titles, snippets and URLs, and the on-page signals
+  read from your page and the compared pages,
 - a short summary of the capture (counts, hosts, status codes).
 
 AI steps inside a flow send their prompt — including any values the prompt pulls in from
@@ -146,6 +155,38 @@ nothing from your Muse account beyond the replies in its own side chats. While a
 progress it stores, on this machine, which side chat that question is using. Masking (above) applies
 to Muse the same way.
 
+## Using your tabs
+
+When you ask the AI to do something in your browser, it can list your open tabs (title and
+address), open, switch to, navigate and close tabs, read a tab as a numbered list of its visible
+controls, take a screenshot of a tab's visible area, and click, type, press keys, choose options,
+hover, scroll, drag and fire page events there — as you, with that site's cookies, like your own
+clicks. A bar on the page ("NetScope AI is using this tab") shows when this happens, with a Stop
+button.
+
+- It only acts on http and https pages, and only closes tabs it opened.
+- It never types into password, card, bank, identity or one-time-code fields, and leaves robot
+  checks and consent banners to you.
+- Clicks that look like buying, paying, deleting, sending or publishing wait for your yes, even
+  on autopilot, unless you turn that off in Settings; "Ask before … acts: for every request and
+  every click" makes every action wait.
+- Screenshots are sent to the AI only when the chosen model reads images (Kimi K3.x); Muse gets
+  the text page map instead. Screenshots are not saved with the conversation; small previews of
+  the last few stay on your machine with the chat.
+
+## SEO comparisons
+
+In the SEO tab (or when you ask the AI to compare), NetScope opens a background tab in your
+browser, searches Google for each query — with your Google session, at a person's pace — and
+reads the results page: result titles, addresses and snippets, People also ask questions,
+related searches and which features appear. It then opens your page and the top two other
+results in that tab and reads their on-page signals (title, description, headings, word count,
+structured data, links, images, dates, load timing). To suggest queries it fetches your site's
+`robots.txt`, sitemap and a few pages without cookies. If Google shows a robot check or a
+consent page, NetScope stops and asks you to handle it; it never answers them for you. The tab
+closes when the comparison ends. The last six comparisons are kept in `chrome.storage.local`,
+without page text.
+
 ## Requests and flows
 
 When you click **Send** in Edit & send, the AI (Kimi or Muse) sends a request (on autopilot, or after your
@@ -175,8 +216,10 @@ used, flows that run by themselves or change data, and deleting flows — or for
 - **storage** — settings, API key, flows and run history (local); chat per tab (session).
 - **alarms** — flow schedules.
 - **scripting** — injects the capture hook into tabs that were already open when you first
-  click the icon, sends "from the page" requests inside the site's tab, and adds the Muse script
-  to a muse.ai tab that was open before NetScope was installed or updated.
+  click the icon, sends "from the page" requests inside the site's tab, adds the Muse script
+  to a muse.ai tab that was open before NetScope was installed or updated, and, when you ask the
+  AI to use your tabs or run an SEO comparison, reads and acts on the tab it works in. The same
+  host permission lets it take screenshots of that tab's visible area.
 - **unlimitedStorage** — lets flow collections grow past Chrome's default storage quota.
 - **clipboardWrite** — the Copy buttons.
 - **cookies** — reads the cookies the browser sends to the page you are inspecting (including
@@ -194,9 +237,9 @@ Moonshot, from Muse and from APIs you call are rendered as text, never executed.
 ## Limited Use
 
 NetScope's handling of user data complies with the Chrome Web Store User Data Policy,
-including its Limited Use requirements. Captured traffic is transferred to Moonshot AI (Kimi)
-or to Meta (Muse) only when you have enabled that AI, and only to provide the feature you
-invoked. It is not sold, not
+including its Limited Use requirements. Captured traffic, page content and screenshots are
+transferred to Moonshot AI (Kimi) or to Meta (Muse) only when you have enabled that AI, and only
+to provide the feature you invoked; SEO queries go to Google only when you run a comparison. It is not sold, not
 shared with anyone else, and not used for advertising, creditworthiness or any other purpose.
 
 ## Changes

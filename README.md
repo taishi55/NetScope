@@ -129,6 +129,10 @@ token meter.
 | `get_component_tree`, `get_app_state` | Rendered components with props and hooks; Redux, React Query, Apollo, Next/Nuxt data, Pinia, Vuex, Inertia, globals |
 | `get_storage`, `get_dom_outline` | local/session storage, cookies (HttpOnly too), IndexedDB records, Cache Storage; forms, fields and page structure |
 | `list_sources`, `search_sources`, `read_source` | Bundles and, through source maps, the original source files: file tree, search, read with line numbers |
+| `list_tabs`, `open_tab`, `switch_tab`, `close_tab`, `navigate` | Work across tabs: open sites, go back and forward, close the tabs it opened |
+| `page_snapshot`, `take_screenshot` | See a tab: a numbered map of its visible controls, and a screenshot with the same numbers drawn on it (Kimi K3.x reads images) |
+| `click`, `type_text`, `press_key`, `select_option`, `set_checked`, `hover`, `scroll`, `drag`, `dispatch_event`, `wait_for`, `read_text` | Act like a person: clicks (double, right, with modifiers), typing, shortcuts, options, checkboxes, hover menus, scrolling, drag and drop, any DOM event, waits |
+| `google_search`, `audit_page_seo`, `compare_with_competitors`, `get_seo_report` | SEO: read Google's results, audit a page for a query, compare your page with the top 2 per query |
 
 ### Conversations
 
@@ -186,9 +190,55 @@ Settings → **Ask before Kimi acts**:
 - **For changes** — POST/PUT/PATCH/DELETE requests, requests to a host the page never used
   (a guard against instructions planted in a page's responses), saving a flow that runs by
   itself or has write steps, running a flow with write steps, deleting a flow.
-- **For every request** — also GETs.
+- **For every request and every click** — also GETs, and every action in a tab.
+
+Separately, **Ask before clicks that buy, pay, delete, send or publish** (on by default) makes
+those clicks wait for you even on autopilot. NetScope never types into password, card or
+one-time-code fields, and leaves robot checks and consent banners to you.
 
 The approval card shows the exact method, URL, headers (secrets abbreviated) and body.
+
+## Let the AI use your tabs
+
+Ask for a task instead of an answer — "open our staging admin, create a test coupon called
+SPRING10 and check it shows in the list", "fill this form with the sample data from the last
+request and submit it", "find the pricing page on each of these three sites and compare their
+plans". Kimi works the way a person does: it reads the tab as a numbered map of its controls
+(`[12] button "Pay now"`), looks at a screenshot with the same numbers drawn on it when layout,
+images or colours matter, then clicks, types, presses keys, picks options, hovers, scrolls,
+drags and waits, checking what happened after each step (navigation, new tabs, dialogs, error
+messages, invalid fields). It can open its own tabs and work in the background; links that
+open a new tab open there.
+
+While it acts, the page shows an amber edge and a **NetScope AI is using this tab** bar with a
+**Stop** button. Events are synthetic: CSS-only `:hover` menus, file pickers, native `<select>`
+lists and browser prompts do not open (it uses `select_option` and hands uploads back to you).
+Screenshots go to Kimi K3.x as images; Muse, and any model that rejects images, gets the page
+map instead.
+
+## SEO: compare with Google's top 2
+
+The **SEO** tab takes your domain and, optionally, your queries (one per line, or a Search
+Console *Performance › Queries* CSV). Leave the queries empty and NetScope reads your site and
+sitemap and has the AI pick the queries it most needs to rank for. For each query it:
+
+1. searches Google in a background tab of your browser, at a person's pace, and reads the
+   organic results, People also ask, related searches and SERP features (AI Overview, featured
+   snippet, ads, local pack, videos…);
+2. finds your page (where you rank, or `site:` search, or your homepage — flagged as "no page
+   targets this query");
+3. reads your page and the top 2 other sites, rendered, and scores all three out of 100 on the
+   same on-page rubric: query terms in title, H1, URL, intro and meta; title and meta length;
+   one H1; H2 sections; depth against the top results; People also ask coverage; structured
+   data; alt text; internal links; dates; author; viewport, HTTPS and canonical;
+4. lists what you are missing, by priority.
+
+Open any query for the side-by-side table, then **Write the playbook with Kimi**: why #1 and #2
+win and the exact fixes — titles, meta descriptions, H1, an H2 outline answering People also
+ask, JSON-LD, content to add and internal links — saved as a doc. **Copy as Markdown** and
+**Save as doc** work without an AI. Backlinks and domain authority are not measured; Google's
+results come from your browser, so they can be personal and local. If Google asks you to
+confirm you're not a robot, NetScope stops until you do it yourself.
 
 ## Flows and bots
 
@@ -432,8 +482,10 @@ net-hook.js ─postMessage─▶ content.js ─sendMessage─▶ background.js �
   The capture log, conversations, docs, and flow collections, checkpoints and memory live in
   the extension's IndexedDB, which `unlimitedStorage` lets grow past the default quota.
 - `alarms` — flow schedules.
-- `scripting` — injects the capture hook into tabs that were open before installing, and runs
-  "send from the page" requests inside the site's tab.
+- `scripting` — injects the capture hook into tabs that were open before installing, runs
+  "send from the page" requests inside the site's tab, and reads and acts on the tab the AI is
+  using (page map, clicks, typing, SEO reading). With the host permission it also takes the
+  screenshots of that tab.
 - `clipboardWrite` — the Copy buttons.
 - `cookies` — the App tab and the AI read the cookies the browser sends to the page you are on,
   including HttpOnly ones (values are masked for the AI when **Mask secrets** is on).

@@ -184,7 +184,10 @@ globalThis.__netscopeMuse = (() => {
   function renderMsg(m, resultCap) {
     if (m.role === "tool") return `Result of ${m.name || "tool"}:\n\`\`\`json\n${clip(m.content, resultCap)}\n\`\`\``;
     if (m.role === "assistant") return "You (earlier):\n" + [m.content || "", callBlocks(m.tool_calls)].filter(Boolean).join("\n");
-    if (m.role === "user") return typeof m.content === "string" ? m.content : JSON.stringify(m.content);
+    if (m.role === "user")
+      return typeof m.content === "string"
+        ? m.content
+        : (Array.isArray(m.content) ? m.content : []).map((p) => (p && p.type === "image_url" ? "[screenshot: Muse cannot see images here — use page_snapshot]" : String((p && p.text) || ""))).join("\n");
     return "";
   }
 

@@ -22,13 +22,14 @@
 </head>
 <body>
 <h1>NetScope — Privacy Policy</h1>
-<p class="date"><strong>Last updated: November 19, 2026</strong></p>
+<p class="date"><strong>Last updated: November 20, 2026</strong></p>
 <h2>Summary</h2>
 <p>NetScope captures the API traffic of the pages you open it on and keeps it on your own machine. It has no analytics, no telemetry, no error reporting and no accounts, and it never contacts the developer.</p>
-<p>Data leaves your machine in exactly two ways, both started by you:</p>
+<p>Data leaves your machine in exactly three ways, all started by you:</p>
 <ol>
   <li><strong>An AI assistant (optional): Kimi or Muse</strong> — when you have connected one, consented, and ask a question, excerpts of the captured traffic are sent to it: to Moonshot AI for Kimi, or, for Muse, typed into a side chat of your own Muse account at muse.ai (Meta).</li>
   <li><strong>Requests you send</strong> — when you, the AI at your request, or a flow you saved sends an HTTP request, it goes to the URL that request names, like any request your browser makes.</li>
+  <li><strong>SEO comparisons you start</strong> — the queries you compare are searched on Google from a background tab of your own browser, and the result pages you compare are opened in it, like pages you visit yourself.</li>
 </ol>
 <h2>What NetScope captures</h2>
 <p>On every page, a content script wraps the page's <code>fetch</code>, <code>XMLHttpRequest</code> and <code>WebSocket</code> at load and mirrors their activity to the extension: request method, URL, the headers the page set, request body, response status, headers and body (up to 256 KB each), and WebSocket frames. Native behavior is unchanged. Requests the browser makes on its own (documents, images, scripts) are not captured.</p>
@@ -53,6 +54,8 @@
   <li>the parts of the captured traffic the model asks for through its tools — URLs, headers, request and response body fragments, WebSocket payloads,</li>
   <li>what its inspection tools read from the page you are on — console messages, storage values, cookies, IndexedDB records, app state, the DOM outline, styles, handlers, accessibility and performance reports, feature flags, recorded page requests with their headers, and code from the page's scripts and source maps,</li>
   <li>the results of requests and flow runs it performs for you,</li>
+  <li>when it uses your tabs for a task: the titles and addresses of your open tabs when it lists them, the page map of the tab it acts on (titles, headings, the names and values of visible controls — never the contents of password, card or one-time-code fields) and <strong>screenshots</strong> of that tab's visible area,</li>
+  <li>for SEO work: the queries, Google's result titles, snippets and URLs, and the on-page signals read from your page and the compared pages,</li>
   <li>a short summary of the capture (counts, hosts, status codes).</li>
 </ul>
 <p>AI steps inside a flow send their prompt — including any values the prompt pulls in from earlier steps — to the same endpoint, each time the flow runs, on schedule or not.</p>
@@ -66,6 +69,16 @@
 <p><strong>Off by default.</strong> Muse is Meta's AI agent at muse.ai. NetScope has no Muse API key and never sees your Meta password: you sign in at muse.ai yourself, in a normal tab, and keep it open. Nothing is sent until you pick Muse in Settings, tick its consent box and click "Save and enable".</p>
 <p>After that, the same data listed for Kimi above — your question, the conversation, the parts of the capture the model asks for, the results of requests and flow runs, a capture summary, and the prompts of AI steps in flows — is typed by NetScope into a <strong>side chat in your Muse account</strong>: a small script on <code>https://muse.ai</code> fills the message box and presses Send, and Muse's reply is read back from that tab. Every question, and every AI step in a flow, gets a fresh side chat, which NetScope archives once the answer is read. These messages stay in your Muse history (under archived chats) and are governed by Meta's terms and privacy policy for Muse, including its "Help improve our AI models" setting (Muse → Settings → Data controls), which decides whether Meta may use them to train its models. NetScope asks Muse not to save anything from these side chats to its memory, but cannot switch Muse's memory off. <strong>Only use Muse on traffic you are permitted to share.</strong></p>
 <p>NetScope only presses Muse's Send and Stop buttons, and Archive in the menu of its own finished side chats. It never deletes anything, never approves actions Muse asks you to approve, and reads nothing from your Muse account beyond the replies in its own side chats. While a question is in progress it stores, on this machine, which side chat that question is using. Masking (above) applies to Muse the same way.</p>
+<h2>Using your tabs</h2>
+<p>When you ask the AI to do something in your browser, it can list your open tabs (title and address), open, switch to, navigate and close tabs, read a tab as a numbered list of its visible controls, take a screenshot of a tab's visible area, and click, type, press keys, choose options, hover, scroll, drag and fire page events there — as you, with that site's cookies, like your own clicks. A bar on the page ("NetScope AI is using this tab") shows when this happens, with a Stop button.</p>
+<ul>
+  <li>It only acts on http and https pages, and only closes tabs it opened.</li>
+  <li>It never types into password, card, bank, identity or one-time-code fields, and leaves robot checks and consent banners to you.</li>
+  <li>Clicks that look like buying, paying, deleting, sending or publishing wait for your yes, even on autopilot, unless you turn that off in Settings; "Ask before … acts: for every request and every click" makes every action wait.</li>
+  <li>Screenshots are sent to the AI only when the chosen model reads images (Kimi K3.x); Muse gets the text page map instead. Screenshots are not saved with the conversation; small previews of the last few stay on your machine with the chat.</li>
+</ul>
+<h2>SEO comparisons</h2>
+<p>In the SEO tab (or when you ask the AI to compare), NetScope opens a background tab in your browser, searches Google for each query — with your Google session, at a person's pace — and reads the results page: result titles, addresses and snippets, People also ask questions, related searches and which features appear. It then opens your page and the top two other results in that tab and reads their on-page signals (title, description, headings, word count, structured data, links, images, dates, load timing). To suggest queries it fetches your site's <code>robots.txt</code>, sitemap and a few pages without cookies. If Google shows a robot check or a consent page, NetScope stops and asks you to handle it; it never answers them for you. The tab closes when the comparison ends. The last six comparisons are kept in <code>chrome.storage.local</code>, without page text.</p>
 <h2>Requests and flows</h2>
 <p>When you click <strong>Send</strong> in Edit &amp; send, the AI (Kimi or Muse) sends a request (on autopilot, or after your approval), or a flow runs, the background worker sends that request to its URL with the browser's own cookies for that site, and records it in the tab's capture log. A request marked <strong>from the page</strong> is instead sent from inside an open tab on that site (NetScope runs a small script in the tab to do it), so it carries that page's origin, cookies and page scripts; the response stays on your machine like any other. Scheduled flows run with <code>chrome.alarms</code> while Chrome is open, without further interaction, until you change their schedule to "Manual only" or delete them. A flow with a <strong>page-request trigger</strong> reads the matching captured response (status, headers, body) of the page you are on and runs, at most once per its cooldown, until you pause or delete it; requests NetScope itself sends never trigger flows. A flow's <strong>memory</strong> (values it saves with <code>set</code> → <code>state</code>) is kept in the extension's IndexedDB until you clear it from the flow card or delete the flow. By default the AI works on autopilot: it sends requests and saves, runs and deletes flows without asking, and every action appears in the chat and the Traffic list. Settings → "Ask before … acts" can require your click for requests that can change data (POST, PUT, PATCH, DELETE), requests to hosts the page never used, flows that run by themselves or change data, and deleting flows — or for every request.</p>
 <h2>Permissions</h2>
@@ -73,7 +86,7 @@
   <li><strong>Content scripts and host permission on <code>&lt;all_urls&gt;</code></strong> — the capture hook must be in place on whichever page you choose to debug, and requests and flows must reach whichever API you point them at. Narrow the patterns in <code>manifest.json</code> to limit this. A separate script on <code>https://muse.ai/*</code> does nothing unless you use Muse; NetScope finds your open muse.ai tab by its address when you do.</li>
   <li><strong>storage</strong> — settings, API key, flows and run history (local); chat per tab (session).</li>
   <li><strong>alarms</strong> — flow schedules.</li>
-  <li><strong>scripting</strong> — injects the capture hook into tabs that were already open when you first click the icon, sends "from the page" requests inside the site's tab, and adds the Muse script to a muse.ai tab that was open before NetScope was installed or updated.</li>
+  <li><strong>scripting</strong> — injects the capture hook into tabs that were already open when you first click the icon, sends "from the page" requests inside the site's tab, adds the Muse script to a muse.ai tab that was open before NetScope was installed or updated, and, when you ask the AI to use your tabs or run an SEO comparison, reads and acts on the tab it works in. The same host permission lets it take screenshots of that tab's visible area.</li>
   <li><strong>unlimitedStorage</strong> — lets flow collections grow past Chrome's default storage quota.</li>
   <li><strong>clipboardWrite</strong> — the Copy buttons.</li>
   <li><strong>cookies</strong> — reads the cookies the browser sends to the page you are inspecting (including HttpOnly ones) for the App tab and the AI. NetScope never sets or deletes cookies.</li>
@@ -82,7 +95,7 @@
 <h2>Data collection</h2>
 <p>NetScope collects no personal information, browsing history, usage statistics or identifiers for its developer. There is no remote code: all code ships in the package, and responses from Moonshot, from Muse and from APIs you call are rendered as text, never executed.</p>
 <h2>Limited Use</h2>
-<p>NetScope's handling of user data complies with the Chrome Web Store User Data Policy, including its Limited Use requirements. Captured traffic is transferred to Moonshot AI (Kimi) or to Meta (Muse) only when you have enabled that AI, and only to provide the feature you invoked. It is not sold, not shared with anyone else, and not used for advertising, creditworthiness or any other purpose.</p>
+<p>NetScope's handling of user data complies with the Chrome Web Store User Data Policy, including its Limited Use requirements. Captured traffic, page content and screenshots are transferred to Moonshot AI (Kimi) or to Meta (Muse) only when you have enabled that AI, and only to provide the feature you invoked; SEO queries go to Google only when you run a comparison. It is not sold, not shared with anyone else, and not used for advertising, creditworthiness or any other purpose.</p>
 <h2>Changes</h2>
 <p>Updates to this policy are published at this URL with a new "Last updated" date, and must describe truthfully what the published code does.</p>
 <h2>Contact</h2>

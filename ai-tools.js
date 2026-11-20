@@ -1682,6 +1682,12 @@ window.__netscopeAiTools = (() => {
   // Returns null when the action may run straight away, otherwise a
   // description for the approval card. policy: "writes" | "all" | "never".
   async function approvalFor(name, args, policy) {
+    // Modules that registered their own rules (browser actions) decide first:
+    // some of their actions ask even on autopilot.
+    for (const fn of APPROVERS) {
+      const r = await fn(name, args || {}, policy);
+      if (r !== undefined) return r;
+    }
     if (policy === "never") return null;
     const a = args || {};
     if (name === "http_request") {
@@ -2217,12 +2223,26 @@ window.__netscopeAiTools = (() => {
     "delete_doc"
   ]);
 
-  // Other modules (ai-inspect-tools.js) add their tools here.
+  // Other modules (ai-inspect-tools.js, ai-browser-tools.js) add their tools
+  // here. opts.approve(name, args, policy) returns an approval request, null
+  // (no click needed) or undefined (not my tool).
+  const APPROVERS = [];
   function register(defs, execs, opts) {
     for (const d of defs || []) if (!TOOLS.some((t) => t.function.name === d.function.name)) TOOLS.push(d);
     Object.assign(EXEC, execs || {});
     for (const n of (opts && opts.unbudgeted) || []) UNBUDGETED.add(n);
+    if (opts && typeof opts.approve === "function") APPROVERS.push(opts.approve);
   }
+
+  // Screenshots taken by a tool, waiting to be shown to the model (as an
+  // image message after the tool results) and to the developer.
+  let images = [];
+  const addImage = (img) => images.push(img);
+  const takeImages = () => {
+    const out = images;
+    images = [];
+    return out;
+  };
 
   // Never throws. Every failure becomes a tool result the model can react to,
   // because an exception here would abort the whole run.
@@ -2264,6 +2284,8 @@ window.__netscopeAiTools = (() => {
     jwtHint,
     isRedacting: () => redactOn,
     register,
+    addImage,
+    takeImages,
     clipUrl,
     relT,
     inspectedPage,

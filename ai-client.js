@@ -52,6 +52,9 @@ globalThis.__netscopeAiClient = (() => {
     redactPii: false,
     maxIterations: 100, // tool calls per answer: room to explore, build, test and fix a whole flow
     reasoningEffort: "high",
+    // Clicks that look like buying, paying, deleting, sending or publishing
+    // wait for a yes even on autopilot.
+    confirmRisky: true,
     // Which AI actions wait for a click: "never" = autopilot (default);
     // "writes" = requests that can change data (POST/PUT/PATCH/DELETE), calls
     // to hosts the page never used, and flows that run by themselves;
@@ -87,6 +90,12 @@ globalThis.__netscopeAiClient = (() => {
 
   const isK3 = (model) => /^kimi-k3/.test(model || "");
   const isMuse = (model) => model === "muse";
+  // Screenshots go to Kimi as image parts (K3.x reads base64 images). A model
+  // that rejects them is remembered for this session and gets text only.
+  const noVision = new Set();
+  const canSee = (model) => !!model && !isMuse(model) && !noVision.has(model);
+  const markNoVision = (model) => noVision.add(model);
+  const isImageError = (err) => !!err && err.status === 400 && /image|vision|multimodal|content.*(type|array)|image_url/i.test(String(err.message || ""));
   const providerName = (model) => (isMuse(model) ? "Muse" : "Kimi");
 
   // Settings written by older versions: retired models, the old "medium" effort.
@@ -560,7 +569,10 @@ globalThis.__netscopeAiClient = (() => {
 
   // ~3 characters per token over the JSON actually sent: errs high for
   // English/JSON, which is the safe direction for a budget.
-  const estimateTokens = (body) => Math.ceil(JSON.stringify(body).length / 3) + (body.max_completion_tokens || 131072);
+  // An image costs tokens by its size, not by its base64 length: count each
+  // as about 1,500 tokens.
+  const estimateTokens = (body) =>
+    Math.ceil(JSON.stringify(body, (k, v) => (k === "url" && typeof v === "string" && v.startsWith("data:image") ? "x".repeat(4500) : v)).length / 3) + (body.max_completion_tokens || 131072);
 
   async function chat(opts) {
     const s = await loadSettings();
@@ -654,6 +666,9 @@ globalThis.__netscopeAiClient = (() => {
     penalize,
     isK3,
     isMuse,
+    canSee,
+    markNoVision,
+    isImageError,
     providerName,
     ENDPOINT,
     loadSettings,

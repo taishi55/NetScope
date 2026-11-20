@@ -15,6 +15,12 @@ Prefer Meta's Muse? Sign in at muse.ai in a tab, keep it open (minimized is fine
 SEE THE WHOLE APP, NOT JUST ITS TRAFFIC
 A Console tab with every log, warning and error (with the file and line), uncaught exceptions, failed loads and route changes. An App tab that reads the page like DevTools' Elements, Application and Sources panels together: the framework and its version, routes, the component tree, client state (Redux, React Query, Apollo, Next/Nuxt data, Pinia…), local and session storage, cookies including HttpOnly, IndexedDB, Cache Storage, service workers, and the code — with source maps, the original source files. Plus every request the tab makes with a security-header and hosting report, what each button does, the design system, an accessibility audit, Core Web Vitals with the elements responsible, frames, feature flags and i18n. One click asks the AI to map the app and write it up.
 
+LET THE AI DO THE CLICKING
+Ask for a task, not just an answer: "create a test coupon in our admin and check it shows up", "fill this form with the sample data and submit it". The AI reads each tab as a numbered map of its controls, looks at screenshots with the same numbers drawn on them (Kimi K3.x sees images), and clicks, types, presses keys, picks options, hovers, scrolls, drags and waits — across several tabs, checking what happened after every step. An amber "NetScope AI is using this tab" bar with a Stop button shows while it works. It never types into password, card or one-time-code fields, leaves robot checks and consent banners to you, and asks before clicks that buy, pay, delete, send or publish.
+
+SEE WHY GOOGLE'S TOP 2 OUTRANK YOU
+Enter your domain in the SEO tab, paste your queries or import a Search Console export (or let the AI pick them from your site). For each query NetScope searches Google in a background tab of your browser, reads your page and the top 2 other sites, and scores all three out of 100 on the same on-page checklist: title, meta description, headings, depth, query coverage, People also ask answers, structured data, links, images, freshness and author. Open a query for the side-by-side table, then have the AI write the playbook — new titles, descriptions, H2 outlines, JSON-LD and content to add — saved as a doc.
+
 CALL APIS LIKE POSTMAN
 Paste a cURL into the chat and Kimi runs it and explains the response, or ask it to replay a request the page made with different parameters. Or do it yourself: Edit & send turns any captured request into an editable cURL with a Send button. Requests run from the extension, so CORS doesn't get in the way. Kimi works on autopilot by default; one setting makes anything that changes data wait for your click.
 
@@ -61,7 +67,7 @@ Permission "alarms":
 Runs the user's saved flows on the schedule the user chose.
 
 Permission "scripting":
-Injects the capture hook and popup into tabs that were already open before the extension was installed, when the user clicks the toolbar icon; and, when the user chooses "send from the page" for a request, runs that request inside an open tab on the target site.
+Injects the capture hook and popup into tabs that were already open before the extension was installed, when the user clicks the toolbar icon; when the user chooses "send from the page" for a request, runs that request inside an open tab on the target site; and, when the user asks the AI to do a task in their tabs or runs an SEO comparison, reads the tab it works in (a list of its visible controls, on-page SEO signals, Google's results page) and performs the clicks and typing the task needs. The host permission also lets it capture a screenshot of that tab's visible area for the AI. It never types into password, card or one-time-code fields, and shows a bar with a Stop button on the tab while it acts.
 
 Permission "clipboardWrite":
 Used only when the user clicks a Copy button (cURL, payload, AsyncAPI document, assistant reply).
@@ -73,7 +79,7 @@ Remote code:
 None. All code is packaged with the extension. Responses from Moonshot and from APIs the user calls are data, rendered via textContent — never evaluated or executed.
 
 Data usage — collected or transferred:
-Website content (the page's API traffic) is processed locally and stored in the extension's IndexedDB per tab, cleared on each page load unless the user enables "Keep logs on reload", on tab close, and on browser start. It is transferred only (1) to api.moonshot.ai when the user has enabled the optional assistant with their own key and asks it something, solely to answer, and (2) as HTTP requests the user sends or schedules, to the URLs those requests name. The user consents explicitly before the assistant can run, can require a click for requests that change data, and the chat shows exactly what was sent.
+Website content (the page's API traffic) is processed locally and stored in the extension's IndexedDB per tab, cleared on each page load unless the user enables "Keep logs on reload", on tab close, and on browser start. It is transferred only (1) to api.moonshot.ai when the user has enabled the optional assistant with their own key and asks it something, solely to answer — including page maps and screenshots of tabs the user asked it to work in, (2) as HTTP requests the user sends or schedules, to the URLs those requests name, and (3) as Google searches for the queries the user chose to compare in the SEO tab, made from a background tab of the user's own browser. The user consents explicitly before the assistant can run, can require a click for requests that change data, and the chat shows exactly what was sent.
 
 Nothing is sold, nothing is shared with any other party, nothing is used for advertising or creditworthiness, and the developer receives no data of any kind.
 

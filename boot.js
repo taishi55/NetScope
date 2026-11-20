@@ -10,6 +10,9 @@
   if (standalone) applyMode("large");
 
   if (window.__netscopeInspectTools) window.__netscopeInspectTools.attach(api);
+  if (window.__netscopeBrowserTools) window.__netscopeBrowserTools.attach(api);
+  if (window.__netscopeSeo) window.__netscopeSeo.attach(api);
+  if (window.__netscopeSeoUi) window.__netscopeSeoUi.attach(api);
   if (window.__netscopeConsoleUi) window.__netscopeConsoleUi.attach(api);
   if (window.__netscopeAppUi) window.__netscopeAppUi.attach(api);
   if (window.__netscopeAi) window.__netscopeAi.attach(api);
