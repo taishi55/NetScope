@@ -454,7 +454,7 @@ window.__netscopeAiAgent = (() => {
     const client = C();
     const settings = await client.loadSettings();
     if (!client.isReady(settings)) {
-      h.onError(new Error("The AI assistant is not configured. Add an API key in AI settings."), null);
+      h.onError(new Error("The AI assistant is not configured. Open Settings to connect Kimi or Muse."), null);
       h.onDone("error");
       return;
     }
@@ -489,7 +489,7 @@ window.__netscopeAiAgent = (() => {
       if (last.role === "assistant" && !(last.tool_calls && last.tool_calls.length)) {
         messages.push({ role: "user", content: "Continue exactly where you stopped. Do not repeat what you already wrote." });
       }
-      if (h.onNotice) h.onNotice("Continuing where Kimi stopped…");
+      if (h.onNotice) h.onNotice(`Continuing where ${client.providerName(settings.model)} stopped…`);
     } else {
       const snap = await snapshotText();
       messages.push({ role: "user", content: seed.text + (snap ? "\n\n" + snap : "") });
@@ -499,11 +499,13 @@ window.__netscopeAiAgent = (() => {
 
     const maxIterations = Math.max(spec.maxIterations || 0, settings.maxIterations || C().DEFAULTS.maxIterations);
     const budget = { cap: client.replyCap(settings, settings.reasoningEffort) };
+    const who = client.providerName(settings.model);
     const onWait = (w) =>
       h.onStatus(`Waiting ${Math.max(1, Math.round(w.ms / 1000))} s to stay under your Kimi ${w.tier} limit (${REASON_TEXT[w.reason] || "rate limit"})…`);
     const onRetry = (err, n, max, ms) =>
       h.onStatus(`${err.message} Trying again in ${Math.max(1, Math.round(ms / 1000))} s (${n}/${max})…`);
-    const base = { signal: state.controller.signal, onDelta: h.onDelta, onReasoning: h.onReasoning, onWait, onRetry, reasoning_effort: settings.reasoningEffort };
+    // onStatus: Muse reports progress ("Muse is thinking…") from its tab.
+    const base = { signal: state.controller.signal, onDelta: h.onDelta, onReasoning: h.onReasoning, onWait, onRetry, onStatus: h.onStatus, reasoning_effort: settings.reasoningEffort };
     let finished = false;
     let reason = "complete";
     let continuations = 0;
@@ -516,7 +518,7 @@ window.__netscopeAiAgent = (() => {
           break;
         }
         if (i > 0) pruneHistory();
-        h.onStatus(`thinking… (${i + 1}/${maxIterations})`);
+        h.onStatus(`${who} is thinking… (${i + 1}/${maxIterations})`);
 
         const turn = await robustTurn(
           state,
@@ -535,7 +537,7 @@ window.__netscopeAiAgent = (() => {
             continuations++;
             messages.push({ role: "user", content: "Your reply was cut off. Continue exactly where you stopped, without repeating anything." });
             if (h.onContinueAnswer) h.onContinueAnswer(); // the next text joins this answer
-            else if (h.onNotice) h.onNotice("The answer was cut off — Kimi is finishing it…");
+            else if (h.onNotice) h.onNotice(`The answer was cut off — ${who} is finishing it…`);
             continue;
           }
           finished = true;

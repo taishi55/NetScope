@@ -2,12 +2,15 @@
 CHROME WEB STORE — DETAILED DESCRIPTION  (paste into "Description")
 ========================================================================
 
-Click the icon on any page and ask Kimi about the API it's calling. Send requests from cURL like Postman. Turn a sequence of calls into a flow that runs every hour.
+Click the icon on any page and ask Kimi or Muse about the API it's calling. Send requests from cURL like Postman. Turn a sequence of calls into a flow that runs every hour.
 
 NetScope opens a popup right on the page, starting on a chat with Kimi. No DevTools needed.
 
 CHAT WITH YOUR PAGE'S API
 Ask what an endpoint does, why a request failed, or how the whole API fits together. Kimi works through purpose-built tools instead of a giant prompt: it groups endpoints by normalized path, searches bodies, diffs a failed request against a successful one, and cites the requests it used so you can click straight to them. Choose Kimi K3.1 Pro, K3.1 Pro Highspeed or K3, and how deeply it thinks.
+
+OR USE MUSE, WITH NO API KEY
+Prefer Meta's Muse? Sign in at muse.ai in a tab, keep it open (minimized is fine), and pick Muse in NetScope. NetScope talks to Muse in its own side chat, runs the same tools, and shows the answer right on the page.
 
 CALL APIS LIKE POSTMAN
 Paste a cURL into the chat and Kimi runs it and explains the response, or ask it to replay a request the page made with different parameters. Or do it yourself: Edit & send turns any captured request into an editable cURL with a Send button. Requests run from the extension, so CORS doesn't get in the way. Kimi works on autopilot by default; one setting makes anything that changes data wait for your click.
@@ -28,7 +31,7 @@ EXPANDABLE
 A compact panel, a large split view, or a pill with a live traffic trace.
 
 PRIVACY
-No analytics, no telemetry, and the developer never receives anything. Data leaves your machine only when you ask: Kimi (off until you add your own Moonshot API key and consent) receives your questions and the traffic excerpts it needs; requests and flows go to the URLs they name. Optional masking hides secret headers, cookies and token-shaped strings from Kimi. Your API key stays in this browser profile and is never synced.
+No analytics, no telemetry, and the developer never receives anything. Data leaves your machine only when you ask: Kimi (off until you add your own Moonshot API key and consent) or Muse (off until you pick it and consent; it works through your own signed-in muse.ai tab) receives your questions and the traffic excerpts it needs; requests and flows go to the URLs they name. Optional masking hides secret headers, cookies and token-shaped strings from Kimi. Your API key stays in this browser profile and is never synced.
 
 NOTES
 - Captures the page's own fetch, XHR and WebSocket traffic; reload pages that were open before installing.
@@ -43,7 +46,7 @@ PRIVACY / REVIEW FORM — SUGGESTED JUSTIFICATIONS
 ========================================================================
 
 Single purpose:
-Developer tool for working with a web page's API: it captures the page's fetch/XHR/WebSocket traffic into an in-page popup, lets the user search it, resend requests (from cURL or captured requests), automate multi-step request flows on a schedule, and optionally ask an AI assistant about all of it with the user's own API key.
+Developer tool for working with a web page's API: it captures the page's fetch/XHR/WebSocket traffic into an in-page popup, lets the user search it, resend requests (from cURL or captured requests), automate multi-step request flows on a schedule, and optionally ask an AI assistant about all of it — Kimi with the user's own API key, or Muse through the user's own signed-in muse.ai tab.
 
 Permission "unlimitedStorage":
 Lets the results a user's flows collect (their "collections") grow past Chrome's 10 MB default for extension storage. Stored locally only.

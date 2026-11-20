@@ -94,9 +94,9 @@
           <div id="aiLog" role="log" aria-live="polite">
             <div id="aiEmpty">
               <h2>Ask about this page's API</h2>
-              <p>Kimi reads the requests this page makes, calls endpoints for you, and turns a sequence of calls into a flow that can run on a schedule.</p>
+              <p><span class="ai-name">Kimi</span> reads the requests this page makes, calls endpoints for you, and turns a sequence of calls into a flow that can run on a schedule.</p>
               <div id="aiConnect" class="connect" hidden>
-                <p>Add your Kimi API key to start. Traffic, Edit &amp; send and Flows work without it.</p>
+                <p id="aiConnectText">Add your Kimi API key to start. Traffic, Edit &amp; send and Flows work without it.</p>
                 <button id="aiConnectBtn" class="primary" type="button">Connect Kimi</button>
               </div>
               <div id="aiSuggest" class="suggest">
@@ -118,7 +118,7 @@
             </div>
             <textarea id="aiInput" rows="2" spellcheck="false" placeholder="Ask Kimi, paste a cURL to run, or describe a flow to automate" aria-label="Message Kimi"></textarea>
             <div class="composer-row">
-              <select id="aiModel" title="Kimi model" aria-label="Kimi model"></select>
+              <select id="aiModel" title="AI and model" aria-label="AI and model"></select>
               <select id="aiEffort" title="How long Kimi thinks before answering" aria-label="Thinking depth">
                 <option value="low">Quick</option>
                 <option value="high">Deep</option>
@@ -212,7 +212,7 @@
           <div id="flowsHead">
             <p>Automate API work: chain calls, filter and loop over results, branch, and remember what was already handled. Run a flow now, on a schedule, or whenever this page makes a matching request — they keep working while Chrome is open, even with this page closed.</p>
             <div class="actions">
-              <button id="flowAsk" class="primary" type="button">Build with Kimi</button>
+              <button id="flowAsk" class="primary" type="button">Build with <span class="ai-name">Kimi</span></button>
               <button id="flowNew" type="button">New flow</button>
             </div>
           </div>
@@ -236,24 +236,41 @@
           </button>
         </div>
         <div class="sheet-body">
-          <h4>Kimi API key</h4>
-          <input id="aiKey" type="password" placeholder="sk-…" autocomplete="off" spellcheck="false" aria-label="Kimi API key" />
-          <p class="hint">
-            Get one at platform.moonshot.ai — a key with a spend cap is wise. It is stored in this
-            browser profile only (chrome.storage.local, never synced) and sent only to api.moonshot.ai.
-          </p>
-
-          <label class="field">Model
+          <label class="field">AI
             <select id="aiModelSetting"></select>
           </label>
-          <label class="field">Thinking depth
+
+          <div class="kimi-only">
+            <h4>Kimi API key</h4>
+            <input id="aiKey" type="password" placeholder="sk-…" autocomplete="off" spellcheck="false" aria-label="Kimi API key" />
+            <p class="hint">
+              Get one at platform.moonshot.ai — a key with a spend cap is wise. It is stored in this
+              browser profile only (chrome.storage.local, never synced) and sent only to api.moonshot.ai.
+            </p>
+          </div>
+
+          <div id="museBox" class="muse-only" hidden>
+            <h4>Muse</h4>
+            <p class="hint">
+              Muse runs in your own muse.ai tab, so there is no API key. Sign in there and keep the tab
+              open — minimizing its window is fine. NetScope talks to Muse in a side chat, so the
+              conversation also shows in your Muse history. It never approves actions Muse asks you to approve.
+            </p>
+            <p id="museStatus" class="muse-status" role="status" aria-live="polite">Checking your muse.ai tab…</p>
+            <div class="actions">
+              <button id="museOpen" type="button">Open muse.ai</button>
+              <button id="museCheck" type="button" class="ghost">Check again</button>
+            </div>
+          </div>
+
+          <label class="field kimi-only">Thinking depth
             <select id="aiEffortSetting">
               <option value="low">Quick (low)</option>
               <option value="high">Deep (high)</option>
               <option value="max">Max</option>
             </select>
           </label>
-          <label class="field">Ask before Kimi acts
+          <label class="field"><span>Ask before <span class="ai-name">Kimi</span> acts</span>
             <select id="aiApproval">
               <option value="never">Never — autopilot (default)</option>
               <option value="writes">For changes: POST, PUT, PATCH, DELETE, new hosts and schedules</option>
@@ -264,29 +281,31 @@
             <input id="aiIterations" type="number" min="1" max="200" step="1" />
           </label>
 
-          <h4>Rate limits</h4>
-          <label class="field">Your Kimi account tier
-            <select id="aiTier"></select>
-          </label>
-          <label class="field">Max reply length
-            <select id="aiMaxReply"></select>
-          </label>
-          <p class="hint">
-            Kimi counts every request against your per-minute limit as its input plus the max reply
-            length, whatever the reply really uses. NetScope keeps both small and spaces requests
-            out to stay under your tier, waiting a few seconds instead of failing. Your tier is shown
-            at platform.kimi.ai/console; recharging raises it.
-          </p>
+          <div class="kimi-only">
+            <h4>Rate limits</h4>
+            <label class="field">Your Kimi account tier
+              <select id="aiTier"></select>
+            </label>
+            <label class="field">Max reply length
+              <select id="aiMaxReply"></select>
+            </label>
+            <p class="hint">
+              Kimi counts every request against your per-minute limit as its input plus the max reply
+              length, whatever the reply really uses. NetScope keeps both small and spaces requests
+              out to stay under your tier, waiting a few seconds instead of failing. Your tier is shown
+              at platform.kimi.ai/console; recharging raises it.
+            </p>
+          </div>
 
-          <label class="chk"><input type="checkbox" id="aiRedact" /> Mask secrets before sending to Kimi</label>
+          <label class="chk"><input type="checkbox" id="aiRedact" /> <span>Mask secrets before sending to <span class="ai-name">Kimi</span></span></label>
           <label class="chk sub"><input type="checkbox" id="aiPii" /> Also mask emails, card and SSN patterns</label>
 
           <label class="chk consent"><input type="checkbox" id="aiConsent" /> <span id="aiConsentText"></span></label>
 
           <div class="actions">
             <button id="aiSave" class="primary" type="button">Save and enable</button>
-            <button id="aiTest" type="button">Test key</button>
-            <button id="aiForget" type="button" class="ghost">Forget key</button>
+            <button id="aiTest" type="button" class="kimi-only">Test key</button>
+            <button id="aiForget" type="button" class="ghost kimi-only">Forget key</button>
           </div>
 
           <h4>Your data</h4>
@@ -333,6 +352,7 @@
     <script src="curl.js"></script>
     <script src="ai-tools.js"></script>
     <script src="ai-client.js"></script>
+    <script src="muse-client.js"></script>
     <script src="ai-agent.js"></script>
     <script src="markdown.js"></script>
     <script src="app.js"></script>

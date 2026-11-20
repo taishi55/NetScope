@@ -12,7 +12,7 @@
  */
 "use strict";
 
-importScripts("curl.js", "bg-store.js", "ai-client.js", "flow-engine.js");
+importScripts("curl.js", "bg-store.js", "ai-client.js", "muse-client.js", "flow-engine.js");
 
 const Store = globalThis.__netscopeStore;
 const Flows = globalThis.__netscopeFlows;
@@ -661,10 +661,11 @@ async function maybeTrigger(tabId, e) {
 
 async function aiForFlows(prompt) {
   const s = await AI.loadSettings();
-  if (!AI.isReady(s)) throw new Error("AI steps need the Kimi API key set up in NetScope settings");
+  if (!AI.isReady(s)) throw new Error("AI steps need an AI connected in NetScope settings (Kimi or Muse)");
   const turn = await AI.chat({
     stream: false,
     reasoning_effort: "low",
+    museSession: "flows", // with Muse: one side chat for all flow steps, not one per step
     messages: [
       {
         role: "system",

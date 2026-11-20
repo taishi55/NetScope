@@ -268,6 +268,12 @@ function findIndex(id) {
   return -1;
 }
 
+// The AI the user picked in Settings: "Kimi" or "Muse".
+function aiName() {
+  const a = window.__netscopeAi;
+  return (a && a.aiName && a.aiName()) || "Kimi";
+}
+
 function rpc(method, params) {
   return new Promise((resolve, reject) => {
     if (!port) return reject(new Error("Not connected to NetScope's background worker yet"));
@@ -621,7 +627,7 @@ function nameCell(primary, secondary, title, dup, mixed, source) {
     const s = document.createElement("span");
     s.className = "src";
     s.textContent = source;
-    s.title = source === "AI" ? "Sent by Kimi" : source === "Flow" ? "Sent by a flow" : "Sent by you from NetScope";
+    s.title = source === "AI" ? "Sent by the AI assistant" : source === "Flow" ? "Sent by a flow" : "Sent by you from NetScope";
     cell.appendChild(s);
   }
   if (dup > 1) {
@@ -876,7 +882,7 @@ function renderDetail() {
   if (e.kind === "http") {
     if (ai) {
       ui.detailActions.appendChild(
-        actionBtn("Ask Kimi", () => ai.startRun({ kind: "explain", entryId: e.id, forceTool: true, maxIterations: 6 }))
+        actionBtn("Ask " + aiName(), () => ai.startRun({ kind: "explain", entryId: e.id, forceTool: true, maxIterations: 6 }))
       );
       if (e.status >= 400 || e.status === 0) {
         ui.detailActions.appendChild(
@@ -937,7 +943,7 @@ function renderDetail() {
         ["Started", fmtClock(e.startedAt)]
       ];
       if (e.finalUrl) pairs.splice(1, 0, ["Final URL", e.finalUrl]);
-      if (sourceLabel(e)) pairs.push(["Sent by", sourceLabel(e) === "AI" ? "Kimi" : sourceLabel(e) === "Flow" ? "a flow" : "you, from NetScope"]);
+      if (sourceLabel(e)) pairs.push(["Sent by", sourceLabel(e) === "AI" ? "the AI assistant" : sourceLabel(e) === "Flow" ? "a flow" : "you, from NetScope"]);
       if (e.sentFromPage) pairs.push(["Sent from", "inside the page " + e.sentFromPage]);
       body.appendChild(kvBlock(pairs));
       if (e.droppedHeaders && e.droppedHeaders.length) {
@@ -1040,7 +1046,7 @@ function renderSendBox(body, curlText, fromEntry) {
   actions.appendChild(actionBtn("Copy", () => copyText(ta.value, "cURL copied")));
   if (window.__netscopeAi) {
     actions.appendChild(
-      actionBtn("Ask Kimi to run it", () => {
+      actionBtn(`Ask ${aiName()} to run it`, () => {
         window.__netscopeAi.prefill("Run this request, then explain the response:\n\n" + ta.value, true);
       }, "ghost")
     );
@@ -1330,7 +1336,7 @@ function wireUi() {
   ui.clearBtn.addEventListener("click", () => {
     if (window.__netscopeAi && window.__netscopeAi.isRunning()) {
       window.__netscopeAi.cancel();
-      toast("Cleared — Kimi's answer was stopped because it cited these requests");
+      toast(`Cleared — ${aiName()}'s answer was stopped because it cited these requests`);
     }
     rpc("clear").catch((err) => toast(err.message));
   });

@@ -486,6 +486,12 @@ window.__netscopeAi = (() => {
     const m = newMessage("error");
     m.body.appendChild(node("p", "", msg));
     if (err && err.status === 401) openSettings();
+    if (err && /^(no-tab|signed-out|closed|no-bridge|nav|lost)$/.test(err.muse || "") && MUSE()) {
+      const show = node("button", "", "Open muse.ai");
+      show.type = "button";
+      show.addEventListener("click", () => MUSE().open().catch(() => {}));
+      m.body.appendChild(show);
+    }
     if (spec) {
       const again = node("button", spec.kind === "continue" ? "primary" : "", spec.kind === "continue" ? "Continue" : "Try again");
       again.type = "button";
@@ -1093,9 +1099,15 @@ window.__netscopeAi = (() => {
 
   /* --------------------------------------------------------- settings */
 
+  const MUSE = () => globalThis.__netscopeMuse;
+  const aiName = (model) => CLIENT().providerName(model || (settings && settings.model));
+  // The AI picked in the settings sheet (may differ from the saved one until Save).
+  const sheetModel = () => (el.modelSetting && el.modelSetting.value) || (settings && settings.model);
+
   function consentText() {
-    const base =
-      "Kimi (api.moonshot.ai) will receive your questions and the parts of the captured traffic it asks for — URLs, headers and bodies from this page — plus the responses of requests it sends.";
+    const base = CLIENT().isMuse(sheetModel())
+      ? "Muse (muse.ai, by Meta) will receive your questions and the parts of the captured traffic it asks for — URLs, headers and bodies from this page — plus the responses of requests it sends, as messages in a side chat of your Muse account, where they stay in your Muse history."
+      : "Kimi (api.moonshot.ai) will receive your questions and the parts of the captured traffic it asks for — URLs, headers and bodies from this page — plus the responses of requests it sends.";
     const tail =
       el.redact && el.redact.checked
         ? " Secret headers and token-shaped strings are masked first, but masking is best-effort and cannot catch secrets in arbitrary body fields."
@@ -1111,10 +1123,11 @@ window.__netscopeAi = (() => {
   function openSettings() {
     el.sheet.hidden = false;
     fillSettings();
-    (settings && settings.apiKey ? el.settingsClose : el.key).focus();
+    (settings && (settings.apiKey || CLIENT().isMuse(settings.model)) ? el.settingsClose : el.key).focus();
   }
 
   function closeSettings() {
+    clearTimeout(museTimer);
     el.sheet.hidden = true;
     el.settingsBtn.focus();
   }
@@ -1142,11 +1155,59 @@ window.__netscopeAi = (() => {
     el.pii.checked = !!settings.redactPii;
     el.pii.disabled = !settings.redact;
     el.iter.value = String(settings.maxIterations || CLIENT().DEFAULTS.maxIterations);
-    el.consent.checked = !!settings.consented;
     const k3 = CLIENT().isK3(settings.model);
     el.effort.disabled = !k3;
-    el.effort.title = k3 ? "How long Kimi thinks before answering" : "Thinking depth applies to the K3 models only";
+    el.effort.hidden = CLIENT().isMuse(settings.model); // Muse sets its own depth
+    el.effort.title = k3 ? "How long Kimi thinks before answering" : CLIENT().isMuse(settings.model) ? "Muse sets its own thinking depth" : "Thinking depth applies to the K3 models only";
+    syncSheet();
+    syncNames();
+  }
+
+  // The sheet shows the key and rate limits for Kimi, the tab status for Muse.
+  function syncSheet() {
+    const muse = CLIENT().isMuse(sheetModel());
+    for (const n of el.sheet.querySelectorAll(".kimi-only")) n.hidden = muse;
+    for (const n of el.sheet.querySelectorAll(".muse-only")) n.hidden = !muse;
+    el.consent.checked = !!(settings && (muse ? settings.museConsented : settings.consented));
+    el.effortSetting.disabled = !CLIENT().isK3(sheetModel());
     refreshConsentText();
+    if (muse && !el.sheet.hidden) refreshMuseStatus();
+  }
+
+  // "Kimi" or "Muse" wherever the page names the AI.
+  function syncNames() {
+    const name = aiName();
+    for (const n of document.querySelectorAll(".ai-name")) n.textContent = name;
+    el.input.placeholder = `Ask ${name}, paste a cURL to run, or describe a flow to automate`;
+    el.input.setAttribute("aria-label", "Message " + name);
+    const muse = settings && CLIENT().isMuse(settings.model);
+    el.connectText.textContent = muse
+      ? "Connect Muse to start: sign in at muse.ai in a tab and keep it open. Traffic, Edit & send and Flows work without it."
+      : "Add your Kimi API key to start. Traffic, Edit & send and Flows work without it.";
+    el.connectBtn.textContent = "Connect " + name;
+  }
+
+  let museTimer = 0;
+  async function refreshMuseStatus(watch) {
+    clearTimeout(museTimer);
+    if (!MUSE()) return;
+    let st;
+    try {
+      st = await MUSE().status();
+    } catch (_) {
+      st = null;
+    }
+    el.museStatus.classList.toggle("ok", !!(st && st.signedIn));
+    el.museStatus.textContent = !st
+      ? "Couldn't check for a muse.ai tab."
+      : st.signedIn
+        ? "Connected — your muse.ai tab is signed in." + (st.hidden ? " It's in the background, which is fine." : " You can minimize its window.")
+        : st.open
+          ? "A muse.ai tab is open but not signed in. Sign in there."
+          : "No muse.ai tab is open. Open one and sign in.";
+    el.museOpen.textContent = st && st.open ? "Show muse.ai tab" : "Open muse.ai";
+    // After "Open muse.ai", keep checking while the user signs in.
+    if (watch && !(st && st.signedIn) && !el.sheet.hidden && watch > 0) museTimer = setTimeout(() => refreshMuseStatus(watch - 1), 2500);
   }
 
   async function applySettings(patch, msg) {
@@ -1204,8 +1265,15 @@ window.__netscopeAi = (() => {
     el.dataFile.addEventListener("change", importData);
 
     el.model.addEventListener("change", () => applySettings({ model: el.model.value }));
-    el.modelSetting.addEventListener("change", () => {
-      el.effortSetting.disabled = !CLIENT().isK3(el.modelSetting.value);
+    el.modelSetting.addEventListener("change", syncSheet);
+    el.museCheck.addEventListener("click", () => refreshMuseStatus());
+    el.museOpen.addEventListener("click", async () => {
+      try {
+        await MUSE().open();
+      } catch (err) {
+        say((err && err.message) || "Couldn't open muse.ai");
+      }
+      refreshMuseStatus(48);
     });
     el.effort.addEventListener("change", () => applySettings({ reasoningEffort: el.effort.value }));
 
@@ -1246,6 +1314,25 @@ window.__netscopeAi = (() => {
     el.consent.addEventListener("change", refreshConsentText);
 
     el.save.addEventListener("click", async () => {
+      const muse = CLIENT().isMuse(el.modelSetting.value);
+      const common = {
+        model: el.modelSetting.value,
+        approval: el.approval.value,
+        approvalSet: true,
+        redact: el.redact.checked,
+        redactPii: el.pii.checked,
+        maxIterations: Math.min(CLIENT().MAX_ITERATIONS, Math.max(1, Number(el.iter.value) || CLIENT().DEFAULTS.maxIterations)),
+        iterationsSet: true
+      };
+      if (muse) {
+        if (!el.consent.checked) return say("Tick the consent box to turn on Muse");
+        await applySettings(Object.assign(common, { museConsented: true }), "Muse is on — keep your muse.ai tab open");
+        if (ready) {
+          closeSettings();
+          el.input.focus();
+        }
+        return;
+      }
       const key = el.key.value.trim();
       if (!key) return say("Enter an API key first");
       if (!el.consent.checked) return say("Tick the consent box to turn on Kimi");
@@ -1313,6 +1400,7 @@ window.__netscopeAi = (() => {
       historyBtn: "aiHistory", historySheet: "history", historyClose: "historyClose", historySearch: "historySearch",
       historyList: "historyList", dataExport: "dataExport", dataImport: "dataImport", dataFile: "dataFile",
       dataChats: "dataChats", dataFlows: "dataFlows", dataDocs: "dataDocs", dataSettings: "dataSettings", dataKey: "dataKey",
+      connectText: "aiConnectText", museStatus: "museStatus", museOpen: "museOpen", museCheck: "museCheck",
       redact: "aiRedact", pii: "aiPii", consent: "aiConsent", consentText: "aiConsentText", save: "aiSave",
       test: "aiTest", forget: "aiForget"
     };
@@ -1354,6 +1442,7 @@ window.__netscopeAi = (() => {
         else {
           el.model.value = settings.model;
           el.effort.value = settings.reasoningEffort;
+          syncNames();
         }
         updateRunUi();
       });
@@ -1380,6 +1469,7 @@ window.__netscopeAi = (() => {
     prefill,
     openSettings,
     canExplain,
-    renderRich
+    renderRich,
+    aiName: () => aiName()
   };
 })();

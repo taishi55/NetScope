@@ -67,14 +67,14 @@ window.__netscopeDocsUi = (() => {
       node(
         "p",
         "",
-        "Notes Kimi keeps for you — what an API does, how its auth works, why a request failed, how a flow runs — plus any you write yourself. Kimi updates them as it learns more."
+        `Notes ${aiName()} keeps for you — what an API does, how its auth works, why a request failed, how a flow runs — plus any you write yourself. ${aiName()} updates them as it learns more.`
       )
     );
     const actions = node("div", "actions");
     actions.appendChild(btn("New doc", () => startEdit(null), "primary"));
     if (window.__netscopeAi) {
       actions.appendChild(
-        btn("Ask Kimi to document this site", () => window.__netscopeAi.prefill("Document what this page's API does — endpoints, auth, parameters and quirks — in a doc for this site.", false), "ghost")
+        btn(`Ask ${aiName()} to document this site`, () => window.__netscopeAi.prefill("Document what this page's API does — endpoints, auth, parameters and quirks — in a doc for this site.", false), "ghost")
       );
     }
     head.appendChild(actions);
@@ -82,7 +82,7 @@ window.__netscopeDocsUi = (() => {
     if (!docs.length) {
       const empty = node("div", "flows-empty");
       empty.appendChild(node("p", "", "No docs yet."));
-      empty.appendChild(node("p", "hint", "Ask Kimi to write up what it found, or start one with New doc."));
+      empty.appendChild(node("p", "hint", `Ask ${aiName()} to write up what it found, or start one with New doc.`));
       box.appendChild(empty);
       return box;
     }
@@ -92,7 +92,7 @@ window.__netscopeDocsUi = (() => {
       const open = node("button", "doc-open");
       open.type = "button";
       open.appendChild(node("span", "doc-title", d.title));
-      const meta = [when(d.updatedAt), d.updatedBy === "kimi" ? "by Kimi" : "by you"];
+      const meta = [when(d.updatedAt), d.updatedBy === "kimi" ? "by AI" : "by you"];
       if (d.site) meta.unshift(d.site);
       if (d.size) meta.push(d.size >= 1000 ? `${Math.round(d.size / 100) / 10}k chars` : `${d.size} chars`);
       open.appendChild(node("span", "doc-meta", meta.join(" · ")));
@@ -121,7 +121,7 @@ window.__netscopeDocsUi = (() => {
     bar.appendChild(back);
     bar.appendChild(node("h3", "doc-h", d.title));
     box.appendChild(bar);
-    const meta = [d.site, "updated " + when(d.updatedAt), d.updatedBy === "kimi" ? "by Kimi" : "by you"].filter(Boolean);
+    const meta = [d.site, "updated " + when(d.updatedAt), d.updatedBy === "kimi" ? "by AI" : "by you"].filter(Boolean);
     box.appendChild(node("p", "doc-meta", meta.join(" · ")));
 
     const actions = node("div", "actions doc-actions");
@@ -131,7 +131,7 @@ window.__netscopeDocsUi = (() => {
       btn("Download .md", () => typeof download === "function" && download((d.title || "doc").replace(/[^\w.-]+/g, "_").slice(0, 60) + ".md", d.content, "text/markdown"), "ghost")
     );
     if (window.__netscopeAi) {
-      actions.appendChild(btn("Ask Kimi", () => window.__netscopeAi.prefill(`Read the doc “${d.title}” and update it with anything new you can find on this page. `, false), "ghost"));
+      actions.appendChild(btn("Ask " + aiName(), () => window.__netscopeAi.prefill(`Read the doc “${d.title}” and update it with anything new you can find on this page. `, false), "ghost"));
     }
     const del = btn("Delete", async () => {
       if (!del.dataset.armed) {

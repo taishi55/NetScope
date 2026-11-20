@@ -35,7 +35,9 @@ globalThis.__netscopeAiClient = (() => {
     { id: "kimi-k3.1-pro-highspeed", label: "Kimi K3.1 Pro Highspeed", note: "Same model, 2–3× faster" },
     { id: "kimi-k3", label: "Kimi K3", note: "1M context" },
     { id: "kimi-k2.7-code", label: "Kimi K2.7 Code", note: "Legacy" },
-    { id: "kimi-k2.6", label: "Kimi K2.6", note: "Legacy" }
+    { id: "kimi-k2.6", label: "Kimi K2.6", note: "Legacy" },
+    // Not an API model: Muse runs in the user's own signed-in muse.ai tab (muse-client.js).
+    { id: "muse", label: "Muse (Meta)", note: "Your signed-in muse.ai tab, no API key" }
   ];
   const MODEL_IDS = MODELS.map((m) => m.id);
   const EFFORTS = ["low", "high", "max"];
@@ -44,7 +46,8 @@ globalThis.__netscopeAiClient = (() => {
     apiKey: "",
     model: "kimi-k3.1-pro",
     enabled: false,
-    consented: false,
+    consented: false, // to sending data to Kimi
+    museConsented: false, // to sending data to Muse; a separate recipient, so a separate yes
     redact: false,
     redactPii: false,
     maxIterations: 100, // tool calls per answer: room to explore, build, test and fix a whole flow
@@ -83,6 +86,8 @@ globalThis.__netscopeAiClient = (() => {
   }
 
   const isK3 = (model) => /^kimi-k3/.test(model || "");
+  const isMuse = (model) => model === "muse";
+  const providerName = (model) => (isMuse(model) ? "Muse" : "Kimi");
 
   // Settings written by older versions: retired models, the old "medium" effort.
   function migrate(s) {
@@ -119,14 +124,17 @@ globalThis.__netscopeAiClient = (() => {
 
   async function saveSettings(patch) {
     const current = await loadSettings();
-    cache = migrate(Object.assign({}, current, patch));
-    applyRedaction(cache);
+    const next = migrate(Object.assign({}, current, patch));
+    cache = next;
+    applyRedaction(next);
     try {
-      await chrome.storage.local.set({ [STORE_KEY]: cache });
+      await chrome.storage.local.set({ [STORE_KEY]: next });
     } catch (err) {
       throw new Error("Could not save settings: " + ((err && err.message) || err));
     }
-    return cache;
+    // Not `cache`: the storage.onChanged listener may have cleared it while
+    // the write was in flight, and the caller would get null back.
+    return next;
   }
 
   // Drops the cache so the next load re-reads storage. Used when another
@@ -149,9 +157,12 @@ globalThis.__netscopeAiClient = (() => {
     if (tools) tools.setRedaction(s.redact, s.redactPii);
   }
 
-  // The single gate. Nothing leaves the machine unless all three hold.
+  // The single gate. Nothing leaves the machine unless the chosen AI is
+  // set up and the user agreed to send it data.
   function isReady(s) {
-    return !!(s && s.enabled && s.consented && s.apiKey);
+    if (!s) return false;
+    if (isMuse(s.model)) return !!s.museConsented;
+    return !!(s.enabled && s.consented && s.apiKey);
   }
 
   /* ------------------------------------------------------------ errors */
@@ -553,9 +564,13 @@ globalThis.__netscopeAiClient = (() => {
 
   async function chat(opts) {
     const s = await loadSettings();
-    if (!isReady(s)) throw new Error("The AI assistant is not configured. Add an API key in AI settings.");
+    if (!isReady(s)) throw new Error("The AI assistant is not configured. Open Settings to connect Kimi or Muse.");
 
     const model = opts.model || s.model || DEFAULTS.model;
+    if (isMuse(model)) {
+      if (!globalThis.__netscopeMuse) throw new Error("Muse support did not load. Reload NetScope.");
+      return globalThis.__netscopeMuse.chat(opts);
+    }
     const body = {
       model,
       messages: opts.messages,
@@ -638,6 +653,8 @@ globalThis.__netscopeAiClient = (() => {
     release,
     penalize,
     isK3,
+    isMuse,
+    providerName,
     ENDPOINT,
     loadSettings,
     saveSettings,

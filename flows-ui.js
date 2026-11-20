@@ -140,7 +140,7 @@ window.__netscopeFlowsUi = (() => {
     rate_limited: "was still rate limited (429/503) after retries",
     http_status: "got an unexpected HTTP status",
     template: "has a definition error",
-    ai: "had a Kimi step fail",
+    ai: "had an AI step fail",
     stopped: "was stopped by a stop step",
     subflow: "had a called flow fail",
     error: "failed"
@@ -284,7 +284,7 @@ window.__netscopeFlowsUi = (() => {
   }
 
   const TYPE_LABEL = {
-    ai: "Kimi",
+    ai: "AI",
     delay: "wait",
     set: "set",
     filter: "filter",
@@ -464,7 +464,7 @@ window.__netscopeFlowsUi = (() => {
         node(
           "p",
           "hint",
-          "Ask Kimi something like “whenever this page loads orders, post each new paid one to my webhook” or “every hour, page through all users and flag the inactive ones”. It builds the flow from requests this page already made, runs it once, then schedules it. Or start from New flow, which opens a small example bot."
+          `Ask ${aiName()} something like “whenever this page loads orders, post each new paid one to my webhook” or “every hour, page through all users and flag the inactive ones”. It builds the flow from requests this page already made, runs it once, then schedules it. Or start from New flow, which opens a small example bot.`
         )
       );
       list.appendChild(empty);
@@ -568,7 +568,7 @@ window.__netscopeFlowsUi = (() => {
       actions.appendChild(copyBtn);
       if (window.__netscopeAi) {
         actions.appendChild(
-          btn("Ask Kimi", () => window.__netscopeAi.prefill(`Look at my flow “${f.name}” (id ${f.id}) and its recent runs. `, false), "ghost")
+          btn("Ask " + aiName(), () => window.__netscopeAi.prefill(`Look at my flow “${f.name}” (id ${f.id}) and its recent runs. `, false), "ghost")
         );
       }
       const del = btn("Delete", () => {
@@ -972,7 +972,7 @@ window.__netscopeFlowsUi = (() => {
     const results = (last && last.steps) || [];
     const KIND = {
       http: "HTTP request",
-      ai: "Kimi step",
+      ai: "AI step",
       delay: "Delay",
       set: "Set values",
       filter: "Filter",
@@ -1225,7 +1225,7 @@ window.__netscopeFlowsUi = (() => {
       node(
         "p",
         "hint",
-        "Steps run in order. Use {{steps.<id>.body.field}} or extract + {{vars.name}} to pass values between them. Check lists every problem before you save. Ask Kimi in Chat for the full syntax."
+        "Steps run in order. Use {{steps.<id>.body.field}} or extract + {{vars.name}} to pass values between them. Check lists every problem before you save. Ask " + aiName() + " in Chat for the full syntax."
       )
     );
     if (editing.isNew) {

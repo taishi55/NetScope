@@ -12,6 +12,9 @@ needed.
 - **Kimi models in the dropdown** — `kimi-k3.1-pro` (default), `kimi-k3.1-pro-highspeed`,
   `kimi-k3`, plus the legacy `kimi-k2.7-code` and `kimi-k2.6`. A second dropdown sets
   thinking depth (Quick / Deep / Max → `reasoning_effort` low / high / max).
+- **Or Muse, with no API key** — pick **Muse (Meta)** in the same dropdown to use Meta's Muse
+  agent through your own signed-in muse.ai tab. NetScope types each turn into a Muse side chat
+  and reads the reply back; keep the tab open (a minimized window is fine).
 - **Call APIs like Postman** — paste a cURL into the chat, or ask Kimi to replay a captured
   request with changes. Requests run from the extension (no CORS), are logged in Traffic
   tagged *AI*, *You* or *Flow*. Kimi runs on autopilot by default; Settings can make
@@ -56,6 +59,38 @@ Things to try:
 - “Every hour, get the newest order and post its id to https://hooks.example.com/x.”
 - “Whenever this page loads orders, post each new paid one to my webhook — never the same
   order twice.”
+
+## Use Muse instead of Kimi
+
+[Muse](https://muse.ai) is Meta's AI agent. NetScope can use it in place of Kimi, through your own
+browser session instead of an API key:
+
+1. Open [muse.ai](https://muse.ai) in a tab and sign in. Keep that tab open — you can minimize
+   its window.
+2. In NetScope, open **Settings**, pick **Muse (Meta)** under **AI**. The status line shows
+   whether NetScope can see your signed-in Muse tab (**Open muse.ai** opens or shows it).
+3. Tick the consent box → **Save and enable**. The composer's dropdown switches between Kimi and
+   Muse at any time; each keeps its own consent.
+
+How it works:
+
+- A small script on muse.ai fills Muse's message box, presses **Send**, and reads Muse's reply
+  back as Markdown (tables, code and lists included). The background worker does all the waiting,
+  so a hidden or minimized tab does not stall a reply.
+- Each NetScope conversation gets its own Muse **side chat**, so your main Muse chat stays
+  clean. A follow-up sends only the new turn; Muse keeps the history. Editing or retrying an
+  earlier question starts a fresh side chat with a condensed replay. AI steps inside flows
+  share one side chat.
+- Muse has no function-calling API, so the first message of each side chat lists NetScope's
+  tools and Muse calls them with fenced ` ```tool ` JSON blocks. NetScope runs them exactly as
+  it does for Kimi (same tools, same approval setting) and sends the results back.
+- **Stop** in NetScope presses Muse's Stop button too. NetScope never approves anything Muse
+  asks you to approve, and never touches anything else on the page.
+
+Limits: the conversation lives in your Muse history; Muse is only available where Meta offers
+it; Muse's own usage limits apply; and if Chrome discards or freezes the tab (Memory or Energy
+Saver), NetScope reloads it or tells you what to do. Muse has no thinking-depth setting or
+token meter.
 
 ### Tools Kimi can use
 

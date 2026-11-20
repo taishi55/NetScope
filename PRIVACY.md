@@ -10,9 +10,10 @@ contacts the developer.
 
 Data leaves your machine in exactly two ways, both started by you:
 
-1. **Kimi (optional)** — when you have entered your own Moonshot API key, consented, and ask a
-   question, excerpts of the captured traffic are sent to Moonshot AI.
-2. **Requests you send** — when you, Kimi at your request, or a flow you saved sends an HTTP
+1. **An AI assistant (optional): Kimi or Muse** — when you have connected one, consented, and
+   ask a question, excerpts of the captured traffic are sent to it: to Moonshot AI for Kimi, or,
+   for Muse, typed into a side chat of your own Muse account at muse.ai (Meta).
+2. **Requests you send** — when you, the AI at your request, or a flow you saved sends an HTTP
    request, it goes to the URL that request names, like any request your browser makes.
 
 ## What NetScope captures
@@ -31,8 +32,8 @@ Where it is kept:
   at most the last 3,000 entries.
 - **Conversations** — every chat, including the traffic excerpts and tool results it contains,
   in the extension's IndexedDB until you delete it from History.
-- **Docs** — markdown notes Kimi or you write in the Docs tab, in the extension's IndexedDB
-  until you delete them. Kimi is told never to put tokens or cookies in docs, but a doc holds
+- **Docs** — markdown notes the AI or you write in the Docs tab, in the extension's IndexedDB
+  until you delete them. The AI is told never to put tokens or cookies in docs, but a doc holds
   whatever was written into it.
 - **Flows and run history** — in `chrome.storage.local`; **flow memory, collections and
   checkpoints** — in the extension's IndexedDB. All stay until you delete them. Collections hold whatever data a flow's `collect` steps save from API responses
@@ -90,9 +91,29 @@ sent only as the `Authorization` header to `api.moonshot.ai` (including the free
 copied text. `chrome.storage.local` is not encrypted; prefer a key with a spend cap, and use
 **Forget key** to remove it.
 
+## Muse (optional AI assistant)
+
+**Off by default.** Muse is Meta's AI agent at muse.ai. NetScope has no Muse API key and never
+sees your Meta password: you sign in at muse.ai yourself, in a normal tab, and keep it open.
+Nothing is sent until you pick Muse in Settings, tick its consent box and click "Save and
+enable".
+
+After that, the same data listed for Kimi above — your question, the conversation, the parts of
+the capture the model asks for, the results of requests and flow runs, a capture summary, and the
+prompts of AI steps in flows — is typed by NetScope into a **side chat in your Muse account**: a
+small script on `https://muse.ai` fills the message box and presses Send, and Muse's reply is read
+back from that tab. Each NetScope conversation gets its own side chat; AI steps in flows share
+one. These messages stay in your Muse history and are governed by Meta's terms and privacy policy
+for Muse. **Only use Muse on traffic you are permitted to share.**
+
+NetScope only presses Muse's Send and Stop buttons. It never approves actions Muse asks you to
+approve and reads nothing from your Muse account beyond the replies in its own side chats. It
+stores, on this machine, which side chat belongs to which conversation. Masking (above) applies
+to Muse the same way.
+
 ## Requests and flows
 
-When you click **Send** in Edit & send, Kimi sends a request (on autopilot, or after your
+When you click **Send** in Edit & send, the AI (Kimi or Muse) sends a request (on autopilot, or after your
 approval), or a flow runs, the
 background worker sends that request to its URL with the browser's own cookies for that site,
 and records it in the tab's capture log. A request marked **from the page** is instead sent from inside an open
@@ -103,9 +124,9 @@ delete them. A flow with a **page-request trigger** reads the matching captured 
 (status, headers, body) of the page you are on and runs, at most once per its cooldown, until
 you pause or delete it; requests NetScope itself sends never trigger flows. A flow's
 **memory** (values it saves with `set` → `state`) is kept in the extension's IndexedDB until
-you clear it from the flow card or delete the flow. By default Kimi works on autopilot: it
+you clear it from the flow card or delete the flow. By default the AI works on autopilot: it
 sends requests and saves, runs and deletes flows without asking, and every action appears in
-the chat and the Traffic list. Settings → "Ask before Kimi acts" can require your click for
+the chat and the Traffic list. Settings → "Ask before … acts" can require your click for
 requests that can change data (POST, PUT, PATCH, DELETE), requests to hosts the page never
 used, flows that run by themselves or change data, and deleting flows — or for every request.
 
@@ -113,11 +134,14 @@ used, flows that run by themselves or change data, and deleting flows — or for
 
 - **Content scripts and host permission on `<all_urls>`** — the capture hook must be in place
   on whichever page you choose to debug, and requests and flows must reach whichever API you
-  point them at. Narrow the patterns in `manifest.json` to limit this.
+  point them at. Narrow the patterns in `manifest.json` to limit this. A separate script on
+  `https://muse.ai/*` does nothing unless you use Muse; NetScope finds your open muse.ai tab by
+  its address when you do.
 - **storage** — settings, API key, flows and run history (local); chat per tab (session).
 - **alarms** — flow schedules.
 - **scripting** — injects the capture hook into tabs that were already open when you first
-  click the icon, and sends "from the page" requests inside the site's tab.
+  click the icon, sends "from the page" requests inside the site's tab, and adds the Muse script
+  to a muse.ai tab that was open before NetScope was installed or updated.
 - **unlimitedStorage** — lets flow collections grow past Chrome's default storage quota.
 - **clipboardWrite** — the Copy buttons.
 
@@ -125,13 +149,14 @@ used, flows that run by themselves or change data, and deleting flows — or for
 
 NetScope collects no personal information, browsing history, usage statistics or identifiers
 for its developer. There is no remote code: all code ships in the package, and responses from
-Moonshot and from APIs you call are rendered as text, never executed.
+Moonshot, from Muse and from APIs you call are rendered as text, never executed.
 
 ## Limited Use
 
 NetScope's handling of user data complies with the Chrome Web Store User Data Policy,
-including its Limited Use requirements. Captured traffic is transferred to Moonshot AI only
-when you have enabled Kimi, and only to provide the feature you invoked. It is not sold, not
+including its Limited Use requirements. Captured traffic is transferred to Moonshot AI (Kimi)
+or to Meta (Muse) only when you have enabled that AI, and only to provide the feature you
+invoked. It is not sold, not
 shared with anyone else, and not used for advertising, creditworthiness or any other purpose.
 
 ## Changes
