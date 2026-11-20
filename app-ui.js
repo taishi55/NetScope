@@ -11,14 +11,24 @@
 "use strict";
 
 window.__netscopeAppUi = (() => {
+  // [key, label, group] — groups organise the compact select menu.
   const PANELS = [
-    ["overview", "Overview"],
-    ["routes", "Routes"],
-    ["components", "Components"],
-    ["state", "State"],
-    ["storage", "Storage"],
-    ["sources", "Sources"],
-    ["dom", "DOM"]
+    ["overview", "Overview", "Structure"],
+    ["routes", "Routes", "Structure"],
+    ["components", "Components", "Structure"],
+    ["dom", "DOM", "Structure"],
+    ["handlers", "Handlers", "Structure"],
+    ["frames", "Frames", "Structure"],
+    ["state", "State", "Data"],
+    ["storage", "Storage", "Data"],
+    ["flags", "Flags & i18n", "Data"],
+    ["sources", "Sources", "Code"],
+    ["network", "Network", "Network"],
+    ["security", "Security", "Network"],
+    ["design", "Design", "Look and feel"],
+    ["styles", "Styles", "Look and feel"],
+    ["accessibility", "Accessibility", "Look and feel"],
+    ["performance", "Performance", "Look and feel"]
   ];
   let api = null;
   let panel = "overview";
@@ -29,6 +39,9 @@ window.__netscopeAppUi = (() => {
   let statePath = "";
   let idb = { db: "", store: "" };
   let domSelector = "";
+  let netType = "all";
+  let handlersSelector = "";
+  let stylesSelector = "body";
   let compFilter = "";
   let srcQuery = "";
   let srcRead = null; // { file | url, line }
@@ -50,7 +63,14 @@ window.__netscopeAppUi = (() => {
   }
 
   // Page text is untrusted: escape everything Markdown would interpret.
-  const esc = (s) => String(s == null ? "" : s).replace(/\r?\n/g, " ").replace(/([\\`*_{}[\]()#+\-.!|~<>])/g, "\\$1");
+  // Inline markers are escaped everywhere; block markers (# - + 1.) only where
+  // they could start a line. Dots stay, so URLs read and link normally.
+  const esc = (s) =>
+    String(s == null ? "" : s)
+      .replace(/\r?\n/g, " ")
+      .replace(/([\\`*_{}[\]()|~<>])/g, "\\$1")
+      .replace(/^(\s*)([#+\-!])/, "$1\\$2")
+      .replace(/^(\s*\d+)\.(\s)/, "$1\\.$2");
   // Inside `code` Markdown escapes are not processed: only backticks need removing.
   const code = (s) => String(s == null ? "" : s).replace(/\r?\n/g, " ").replace(/`/g, "ˋ");
   const fence = (s, lang) => {
@@ -83,6 +103,7 @@ window.__netscopeAppUi = (() => {
     const body = $("appBody");
     const mine = ++seq;
     const key = panelKey();
+    if ($("appSelect")) $("appSelect").value = panel;
     for (const b of $("appTabs").children) {
       const on = b.dataset.panel === panel;
       b.classList.toggle("on", on);
@@ -119,7 +140,7 @@ window.__netscopeAppUi = (() => {
   }
 
   const panelKey = () =>
-    panel === "storage" ? `storage:${storageArea}:${idb.db}:${idb.store}` : panel === "state" ? `state:${stateSource}:${statePath}` : panel === "dom" ? `dom:${domSelector}` : panel === "components" ? `components:${compFilter}` : panel === "sources" ? `sources:${srcQuery}:${srcRead ? srcRead.file || srcRead.url : ""}:${srcRead ? srcRead.line || "" : ""}` : panel;
+    panel === "storage" ? `storage:${storageArea}:${idb.db}:${idb.store}` : panel === "state" ? `state:${stateSource}:${statePath}` : panel === "dom" ? `dom:${domSelector}` : panel === "network" ? `network:${netType}` : panel === "handlers" ? `handlers:${handlersSelector}` : panel === "styles" ? `styles:${stylesSelector}` : panel === "components" ? `components:${compFilter}` : panel === "sources" ? `sources:${srcQuery}:${srcRead ? srcRead.file || srcRead.url : ""}:${srcRead ? srcRead.line || "" : ""}` : panel;
 
   async function load() {
     switch (panel) {
@@ -146,6 +167,27 @@ window.__netscopeAppUi = (() => {
       }
       case "dom":
         return call("dom", { selector: domSelector || undefined, max_lines: 600 });
+      case "network": {
+        const r = await api.rpc("res.list", { type: netType === "failed" ? undefined : netType, failed: netType === "failed" || undefined, limit: 400 });
+        if (!r.total) r.timing = await call("resources", { limit: 400 }).catch(() => null);
+        return r;
+      }
+      case "security":
+        return api.rpc("res.security", {});
+      case "handlers":
+        return call("handlers", { selector: handlersSelector || undefined, limit: 400 });
+      case "styles":
+        return call("styles", { selector: stylesSelector || "body" });
+      case "design":
+        return call("design");
+      case "accessibility":
+        return call("a11y");
+      case "performance":
+        return call("performance");
+      case "frames":
+        return call("frames");
+      case "flags":
+        return call("flags");
     }
     return {};
   }
@@ -424,6 +466,168 @@ window.__netscopeAppUi = (() => {
         })
       ]);
       md(body, [`Outline of \`${code(r.root)}\` — ${r.lines} lines${r.truncated ? " (truncated)" : ""}`, fence(r.outline || "(empty)")].join("\n\n"));
+    },
+
+    network(body, r) {
+      body.appendChild(
+        chips(
+          [
+            ["all", "All"],
+            ["main_frame", "Document"],
+            ["script", "Scripts"],
+            ["stylesheet", "Styles"],
+            ["image", "Images"],
+            ["font", "Fonts"],
+            ["xmlhttprequest", "Fetch/XHR"],
+            ["media", "Media"],
+            ["sub_frame", "Frames"],
+            ["other", "Other"],
+            ["failed", "Failed"]
+          ],
+          netType,
+          (k) => {
+            netType = k;
+            show();
+          },
+          "Request type"
+        )
+      );
+      const out = [];
+      if (!r.total) {
+        out.push(r.recording ? "Nothing recorded yet. **Reload the page** to record its document, scripts, styles and every other request with status and headers." : "Not recording this tab yet.");
+        const rt = r.timing && r.timing.resources;
+        if (rt && rt.length) {
+          out.push("", `### Loaded so far (Resource Timing, ${r.timing.count})`, "| Type | Resource | Time | Size |", "| --- | --- | ---: | ---: |");
+          for (const x of rt.slice(-150)) out.push(`| ${esc(x.type)} | \`${code(x.url.replace(/^https?:\/\//, "").slice(0, 140))}\` | ${x.ms} ms | ${x.kb} kB |`);
+        }
+        return md(body, out.join("\n"));
+      }
+      const bt = r.by_type || {};
+      out.push(`${r.total} requests recorded${r.failed ? `, **${r.failed} failed**` : ""}: ` + Object.entries(bt).map(([k, v]) => `${esc(k.replace("_", " "))} ${v.count}`).join(", "));
+      out.push("", "| | Status | Type | Request | Time | Size |", "| --- | --- | --- | --- | ---: | ---: |");
+      for (const q of r.requests) {
+        const status = q.error ? "✕ " + esc(q.error.replace(/^net::/, "")) : q.status ? String(q.status) + (q.cache ? " (cache)" : "") : "—";
+        out.push(`| ${esc(q.method)} | ${status} | ${esc(q.type.replace("_", " "))}${q.worker ? " (worker)" : ""} | \`${code(q.url.replace(/^https?:\/\//, "").slice(0, 140))}\`${q.redirect_to ? " → \`" + code(q.redirect_to.slice(0, 80)) + "\`" : ""} | ${q.ms != null ? q.ms + " ms" : ""} | ${q.kb != null ? q.kb + " kB" : ""} |`);
+      }
+      if (r.matched > r.requests.length) out.push("", `Showing ${r.requests.length} of ${r.matched}.`);
+      md(body, out.join("\n"));
+    },
+
+    security(body, s) {
+      if (!s.document) return md(body, esc(s.note || "No page document recorded."));
+      const out = [`### ${esc(s.document.url)}`, `Status ${s.document.status}${s.document.protocol ? ", " + esc(s.document.protocol) : ""}${s.document.ip ? ", IP " + esc(s.document.ip) : ""}`];
+      if ((s.issues || []).length) out.push("", "### Issues", ...s.issues.map((i) => "- " + esc(i)));
+      const h = s.security_headers || {};
+      if (Object.keys(h).length) {
+        out.push("", "### Security headers", "| Header | Value |", "| --- | --- |");
+        for (const [k, v] of Object.entries(h)) out.push(`| \`${code(k)}\` | ${esc(String(v).slice(0, 200))} |`);
+      }
+      if (s.content_security_policy) out.push("", "### Content-Security-Policy", fence(Object.entries(s.content_security_policy).map(([k, v]) => k + " " + v.join(" ")).join("\n")));
+      if ((s.cookies_set_by_document || []).length) {
+        out.push("", "### Cookies set by the page", "| Cookie | HttpOnly | Secure | SameSite |", "| --- | --- | --- | --- |");
+        for (const c of s.cookies_set_by_document) out.push(`| \`${code(c.name)}\` | ${c.httpOnly ? "yes" : "**no**"} | ${c.secure ? "yes" : "**no**"} | ${esc(c.sameSite)} |`);
+      }
+      const hb = s.hosting_and_backend || {};
+      const host = (title, obj) => {
+        const rows = Object.entries(obj || {});
+        if (!rows.length) return;
+        out.push("", `### ${title}`, "| Host | Clues |", "| --- | --- |");
+        for (const [k, v] of rows) out.push(`| ${esc(k)} | ${esc(v.join(", "))} |`);
+      };
+      host("Hosting and backend — this site", hb.this_site);
+      host("Third parties", hb.third_parties);
+      const cors = Object.entries(s.cors_by_host || {});
+      if (cors.length) out.push("", "### CORS", "| API host | Allows |", "| --- | --- |", ...cors.map(([k, v]) => `| ${esc(k)} | ${esc(v)} |`));
+      md(body, out.join("\n"));
+    },
+
+    handlers(body, r) {
+      controls(body, [
+        input("Only inside a region, e.g. header or #checkout", handlersSelector, (v) => {
+          handlersSelector = v;
+          show();
+        })
+      ]);
+      md(body, [`${r.interactive} interactive elements, ${r.with_handlers} with handlers found.`, esc(r.note), fence((r.elements || []).join("\n") || "(none)")].join("\n\n"));
+    },
+
+    styles(body, s) {
+      controls(body, [
+        input("Element, e.g. button.primary or #checkout h2", stylesSelector, (v) => {
+          stylesSelector = v || "body";
+          show();
+        })
+      ]);
+      if (s.error) return md(body, esc(s.error));
+      const out = [`### ${esc(s.element)}${s.matches > 1 ? ` (1 of ${s.matches})` : ""}`];
+      if (s.text) out.push(`"${esc(s.text)}"`);
+      out.push("", `Box: ${s.box.width}×${s.box.height} at ${s.box.x},${s.box.y}${s.box.visible ? "" : " — **not visible**"}`);
+      out.push("", "| Property | Value |", "| --- | --- |", ...Object.entries(s.computed || {}).map(([k, v]) => `| \`${code(k)}\` | ${esc(v)} |`));
+      if ((s.matched_rules || []).length) out.push("", "### Matching rules", fence(s.matched_rules.map((r) => `${r.selector}   /* ${r.where} */\n  ${r.css}`).join("\n\n"), "css"));
+      if (s.inline_style) out.push("", "Inline style:", fence(s.inline_style, "css"));
+      if (s.custom_properties_in_scope) out.push("", "### Variables in scope", fence(s.custom_properties_in_scope.join("\n"), "css"));
+      md(body, out.join("\n"));
+    },
+
+    design(body, d) {
+      const list = (title, arr) => (arr && arr.length ? ["", `### ${title}`, fence(arr.join("\n"))] : []);
+      const out = [];
+      out.push("### Styling approach", d.css_approach && d.css_approach.length ? d.css_approach.map((x) => "- " + esc(x)).join("\n") : "Plain CSS (no framework fingerprint).");
+      const vars = d.css_variables || {};
+      out.push("", `### Design tokens (${vars.count || 0} CSS variables)`);
+      for (const [k, v] of Object.entries(vars.by_prefix || {}).slice(0, 30)) out.push(`**--${esc(k)}** (${v.length})`, fence(v.slice(0, 40).join("\n"), "css"));
+      out.push(...list("Text colors", d.text_colors), ...list("Background colors", d.background_colors), ...list("Fonts in use", d.font_families), ...list("Loaded fonts", d.loaded_fonts), ...list("Font sizes", d.font_sizes), ...list("Border radii", d.border_radii), ...list("Shadows", d.shadows), ...list("Breakpoints", d.breakpoints));
+      if (d.layout) out.push("", `Layout: ${d.layout.flex_containers} flex and ${d.layout.grid_containers} grid containers in ${d.layout.sampled_elements} elements.${d.dark_mode ? " Has a dark mode." : ""}`);
+      out.push(...list("Stylesheets", d.stylesheets));
+      md(body, out.join("\n"));
+    },
+
+    accessibility(body, a) {
+      const out = [`**${a.issues_count} issues** · contrast: ${a.contrast.below_aa} of ${a.contrast.text_elements_checked} text elements below WCAG AA · lang: ${esc(a.lang || "missing")}`];
+      if ((a.issues || []).length) out.push("", "### Issues", fence(a.issues.join("\n")));
+      out.push("", "### Landmarks", esc((a.landmarks || []).join(", ") || "none"));
+      out.push("", "### Heading outline", fence((a.heading_outline || []).join("\n") || "(no headings)"));
+      out.push("", "### Controls and their names", fence((a.controls || []).join("\n")));
+      out.push("", esc(a.note));
+      md(body, out.join("\n"));
+    },
+
+    performance(body, p) {
+      const v = p.web_vitals || {};
+      const out = [];
+      if (p.note) out.push(esc(p.note), "");
+      out.push("| Metric | Value | Rating | Detail |", "| --- | ---: | --- | --- |");
+      const row = (name, val, rating, detail) => out.push(`| ${name} | ${val} | ${rating ? (rating === "good" ? "good" : "**" + esc(rating) + "**") : ""} | ${esc(detail || "")} |`);
+      if (v.LCP) row("LCP", v.LCP.ms + " ms", v.LCP.rating, v.LCP.element + (v.LCP.url ? " " + v.LCP.url.slice(0, 60) : ""));
+      if (v.CLS) row("CLS", v.CLS.value, v.CLS.rating, "");
+      if (v.INP && v.INP.ms != null) row("INP", v.INP.ms + " ms", v.INP.rating, `${v.INP.event} on ${v.INP.target} (input delay ${v.INP.input_delay} ms, processing ${v.INP.processing} ms)`);
+      else if (v.INP) row("INP", "—", "", v.INP.note);
+      if (v.FCP) row("FCP", v.FCP.ms + " ms", v.FCP.rating, "");
+      if (v.TTFB) row("TTFB", v.TTFB.ms + " ms", v.TTFB.rating, "");
+      if ((p.layout_shifts || []).length) out.push("", "### Layout shifts", fence(p.layout_shifts.map((s) => `${s.ms} ms  ${s.value}  ${s.moved.join(", ")}`).join("\n")));
+      const lt = p.long_tasks;
+      if (lt && lt.count) out.push("", `### Long tasks: ${lt.count}, ${lt.totalMs} ms in total`, fence(lt.worst.map((t) => `${t.ms} ms at ${t.at} ms${t.from ? "  " + t.from : ""}`).join("\n")));
+      if ((p.long_animation_frames || []).length) out.push("", "### Slow frames and the scripts behind them", fence(p.long_animation_frames.map((f) => `${f.ms} ms (blocking ${f.blocking_ms}) at ${f.at} ms\n` + f.scripts.map((s) => `   ${s.ms} ms ${s.fn || "(anonymous)"} ${s.source || ""} ${s.invoker || ""}`).join("\n")).join("\n")));
+      if ((p.js_heap_mb_over_time || []).length > 1) out.push("", "### JS heap", fence(p.js_heap_mb_over_time.map((h) => `${h.s} s  ${h.mb} MB`).join("\n")));
+      md(body, out.join("\n"));
+    },
+
+    frames(body, f) {
+      const out = [`${(f.frames || []).length} frames.`, "", "| Id | URL | Frameworks | Forms | Inputs | Scripts |", "| ---: | --- | --- | ---: | ---: | ---: |"];
+      for (const x of f.frames || []) out.push(`| ${x.frame_id} | \`${code((x.url || x.error || "").slice(0, 140))}\`${x.top ? " (page)" : ""} | ${esc((x.frameworks || []).join(", "))} | ${x.forms ?? ""} | ${x.inputs ?? ""} | ${x.scripts ?? ""} |`);
+      out.push("", "Ask the AI about a frame by its id — every inspection tool takes a frame_id.");
+      md(body, out.join("\n"));
+    },
+
+    flags(body, f) {
+      const out = ["### Feature flags and experiments"];
+      if (!(f.feature_flags || []).length && !(f.experiments || []).length) out.push("No flag SDK or flag-like storage found.");
+      for (const x of f.feature_flags || []) out.push("", `**${esc(x.source)}**`, fence(JSON.stringify(Object.assign({}, x, { source: undefined }), null, 2), "json"));
+      for (const x of f.experiments || []) out.push("", `**${esc(x.source)}**`, fence(JSON.stringify(x, null, 2), "json"));
+      out.push("", "### Language and region", fence(JSON.stringify(f.i18n || {}, null, 2), "json"));
+      out.push("", "### Workers", Array.isArray(f.workers) ? (f.workers.length ? fence(f.workers.map((w) => `${w.kind} ${w.name ? '"' + w.name + '" ' : ""}${w.url}${w.module ? " (module)" : ""}`).join("\n")) : "None started.") : esc(String(f.workers)));
+      if ((f.event_streams || []).length) out.push("", "### EventSource streams", fence(f.event_streams.map((s) => s.url).join("\n")));
+      md(body, out.join("\n"));
     }
   };
 
@@ -431,6 +635,25 @@ window.__netscopeAppUi = (() => {
 
   function wire() {
     const tabs = $("appTabs");
+    // Small popup: one grouped select instead of 16 chips.
+    const sel = $("appSelect");
+    if (sel) {
+      let group = null;
+      for (const [key, label, g] of PANELS) {
+        if (!group || group.label !== g) {
+          group = node("optgroup");
+          group.label = g;
+          sel.appendChild(group);
+        }
+        const o = node("option", "", label);
+        o.value = key;
+        group.appendChild(o);
+      }
+      sel.addEventListener("change", () => {
+        panel = sel.value;
+        show();
+      });
+    }
     for (const [key, label] of PANELS) {
       const b = btn(label, () => {
         panel = key;

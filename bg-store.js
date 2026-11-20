@@ -1,13 +1,15 @@
 /* NetScope – bg-store.js
  * Per-tab capture log, owned by the background worker and mirrored to
- * IndexedDB so it survives both page reloads ("Keep logs on reload") and the
- * MV3 service worker being suspended mid-session.
+ * IndexedDB so it survives both page reloads ("Keep logs") and the MV3
+ * service worker being suspended mid-session.
  *
- *   entries  keyPath [tabId, id]   one row per captured entry
+ *   entries  keyPath [tabId, id]   API traffic (fetch / XHR / WebSocket) with bodies
  *   logs     keyPath [tabId, id]   console messages, errors and route changes
- *   tabs     keyPath tabId         { seq, logSeq, startedAt, ui }
+ *   res      keyPath [tabId, id]   every request the tab made (documents, scripts,
+ *                                  images, fonts, workers…): status and headers, no bodies
+ *   tabs     keyPath tabId         { seq, logSeq, resSeq, startedAt, ui }
  *
- * Writes are batched: mutations mark an entry dirty and one transaction per
+ * Writes are batched: mutations mark a row dirty and one transaction per
  * ~400 ms flushes them. Tab ids are only unique within a browser session, so
  * the whole database is wiped on browser startup.
  */
@@ -18,8 +20,14 @@ globalThis.__netscopeStore = (() => {
   const MAX_ENTRIES = 3000; // per tab
   const MAX_CHARS = 48 * 1024 * 1024; // body/payload chars per tab before evicting oldest
   const FLUSH_MS = 400;
-  const MAX_LOGS = 2000; // console messages per tab
-  const MAX_LOG_CHARS = 6 * 1024 * 1024;
+
+  // Side logs that live next to the API entries, each its own ring buffer.
+  const RINGS = {
+    logs: { seq: "logSeq", max: 2000, maxChars: 6 * 1024 * 1024, weight: (l) => (l.text ? l.text.length : 0) + (l.stack ? l.stack.length : 0) + 120 },
+    res: { seq: "resSeq", max: 4000, maxChars: 12 * 1024 * 1024, weight: (r) => (r.url ? r.url.length : 0) + (r.resHeaderText ? r.resHeaderText.length : 0) + (r.reqHeaderText ? r.reqHeaderText.length : 0) + 160 }
+  };
+  const RING_NAMES = Object.keys(RINGS);
+  const STORES = ["entries", "tabs"].concat(RING_NAMES);
 
   let dbPromise = null;
   const tabs = new Map(); // tabId -> Tab
@@ -27,12 +35,12 @@ globalThis.__netscopeStore = (() => {
   function db() {
     if (dbPromise) return dbPromise;
     dbPromise = new Promise((resolve, reject) => {
-      const req = indexedDB.open(DB_NAME, 2);
+      const req = indexedDB.open(DB_NAME, 3);
       req.onupgradeneeded = () => {
         const d = req.result;
         if (!d.objectStoreNames.contains("entries")) d.createObjectStore("entries", { keyPath: ["tabId", "id"] });
         if (!d.objectStoreNames.contains("tabs")) d.createObjectStore("tabs", { keyPath: "tabId" });
-        if (!d.objectStoreNames.contains("logs")) d.createObjectStore("logs", { keyPath: ["tabId", "id"] });
+        for (const name of RING_NAMES) if (!d.objectStoreNames.contains(name)) d.createObjectStore(name, { keyPath: ["tabId", "id"] });
       };
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error);
@@ -67,18 +75,13 @@ globalThis.__netscopeStore = (() => {
     );
   }
 
-  const logWeight = (l) => (l.text ? l.text.length : 0) + (l.stack ? l.stack.length : 0) + 120;
-  const STORES = ["entries", "logs", "tabs"];
+  // t[name] is the array (t.logs, t.res); t.ring[name] holds its bookkeeping.
+  const newRing = () => ({ chars: 0, dirty: new Set(), deleted: new Set() });
 
   async function load(tabId) {
     const t = {
       tabId,
       entries: [],
-      logs: [],
-      logSeq: 0,
-      logChars: 0,
-      logsDirty: new Set(),
-      logsDeleted: new Set(),
       seq: 0,
       startedAt: Date.now(),
       ui: "hidden",
@@ -88,24 +91,33 @@ globalThis.__netscopeStore = (() => {
       deleted: new Set(),
       metaDirty: false,
       timer: 0,
-      gen: 0 // bumped by clear(); a flush that started before it must not resurrect rows
+      gen: 0, // bumped by clear(); a flush that started before it must not resurrect rows
+      ring: {}
     };
+    for (const name of RING_NAMES) {
+      t[name] = [];
+      t[RINGS[name].seq] = 0;
+      t.ring[name] = newRing();
+    }
     try {
       const d = await db();
       const tx = d.transaction(STORES, "readonly");
       const meta = await reqP(tx.objectStore("tabs").get(tabId));
       const range = IDBKeyRange.bound([tabId, -Infinity], [tabId, Infinity]);
       const rows = await reqP(tx.objectStore("entries").getAll(range));
-      const logRows = await reqP(tx.objectStore("logs").getAll(range));
-      logRows.sort((a, b) => a.id - b.id);
-      for (const l of logRows) {
-        t.logs.push(l);
-        t.logChars += logWeight(l);
-        if (l.id > t.logSeq) t.logSeq = l.id;
+      for (const name of RING_NAMES) {
+        const cfg = RINGS[name];
+        const items = await reqP(tx.objectStore(name).getAll(range));
+        items.sort((a, b) => a.id - b.id);
+        for (const it of items) {
+          t[name].push(it);
+          t.ring[name].chars += cfg.weight(it);
+          if (it.id > t[cfg.seq]) t[cfg.seq] = it.id;
+        }
+        if (meta) t[cfg.seq] = Math.max(t[cfg.seq], meta[cfg.seq] || 0);
       }
       if (meta) {
         t.seq = meta.seq || 0;
-        t.logSeq = Math.max(t.logSeq, meta.logSeq || 0);
         t.startedAt = meta.startedAt || t.startedAt;
         t.ui = meta.ui || "hidden";
       }
@@ -157,69 +169,83 @@ globalThis.__netscopeStore = (() => {
     }, FLUSH_MS);
   }
 
+  const meta = (t) => {
+    const m = { tabId: t.tabId, seq: t.seq, startedAt: t.startedAt, ui: t.ui };
+    for (const name of RING_NAMES) m[RINGS[name].seq] = t[RINGS[name].seq];
+    return m;
+  };
+
   async function flush(t) {
-    if (!t.dirty.size && !t.deleted.size && !t.metaDirty && !t.logsDirty.size && !t.logsDeleted.size) return;
+    const ringBusy = RING_NAMES.some((n) => t.ring[n].dirty.size || t.ring[n].deleted.size);
+    if (!t.dirty.size && !t.deleted.size && !t.metaDirty && !ringBusy) return;
     const dirty = Array.from(t.dirty);
     const deleted = Array.from(t.deleted);
-    const logsDirty = Array.from(t.logsDirty);
-    const logsDeleted = Array.from(t.logsDeleted);
     t.dirty.clear();
     t.deleted.clear();
-    t.logsDirty.clear();
-    t.logsDeleted.clear();
+    const ringWork = {};
+    for (const n of RING_NAMES) {
+      ringWork[n] = { dirty: Array.from(t.ring[n].dirty), deleted: Array.from(t.ring[n].deleted) };
+      t.ring[n].dirty.clear();
+      t.ring[n].deleted.clear();
+    }
     const metaDirty = t.metaDirty;
     t.metaDirty = false;
     const gen = t.gen;
     try {
       const d = await db();
       if (gen !== t.gen) {
-        // Cleared meanwhile: entries are gone, but console messages may survive a Traffic clear.
-        for (const l of logsDirty) if (t.logs.includes(l)) t.logsDirty.add(l);
-        if (t.logsDirty.size) scheduleFlush(t);
+        // Cleared meanwhile: entries are gone, but side-log rows that survived the clear still need writing.
+        for (const n of RING_NAMES) for (const it of ringWork[n].dirty) if (t[n].includes(it)) t.ring[n].dirty.add(it);
+        if (RING_NAMES.some((n) => t.ring[n].dirty.size)) scheduleFlush(t);
         return;
       }
       const tx = d.transaction(STORES, "readwrite");
       const es = tx.objectStore("entries");
       for (const id of deleted) es.delete([t.tabId, id]);
       for (const e of dirty) es.put(Object.assign({ tabId: t.tabId }, e));
-      const ls = tx.objectStore("logs");
-      for (const id of logsDeleted) ls.delete([t.tabId, id]);
-      for (const l of logsDirty) ls.put(Object.assign({ tabId: t.tabId }, l));
-      if (metaDirty || dirty.length || logsDirty.length) {
-        tx.objectStore("tabs").put(meta(t));
+      let ringWrites = 0;
+      for (const n of RING_NAMES) {
+        const st = tx.objectStore(n);
+        for (const id of ringWork[n].deleted) st.delete([t.tabId, id]);
+        for (const it of ringWork[n].dirty) st.put(Object.assign({ tabId: t.tabId }, it));
+        ringWrites += ringWork[n].dirty.length;
       }
+      if (metaDirty || dirty.length || ringWrites) tx.objectStore("tabs").put(meta(t));
       await txDone(tx);
     } catch (_) {}
   }
 
-  const meta = (t) => ({ tabId: t.tabId, seq: t.seq, logSeq: t.logSeq, startedAt: t.startedAt, ui: t.ui });
-
-  // Console messages, errors and route changes: their own ring, so the
-  // network list and its tools never see them.
-  function addLog(t, l) {
-    l.id = ++t.logSeq;
-    t.logs.push(l);
-    t.logChars += logWeight(l);
-    while (t.logs.length > MAX_LOGS || (t.logChars > MAX_LOG_CHARS && t.logs.length > 1)) {
-      const old = t.logs.shift();
-      t.logChars -= logWeight(old);
-      t.logsDirty.delete(old);
-      t.logsDeleted.add(old.id);
+  // Appends to a side log (console messages, page requests), evicting the oldest.
+  function addTo(name, t, item) {
+    const cfg = RINGS[name];
+    const r = t.ring[name];
+    item.id = ++t[cfg.seq];
+    t[name].push(item);
+    r.chars += cfg.weight(item);
+    while (t[name].length > cfg.max || (r.chars > cfg.maxChars && t[name].length > 1)) {
+      const old = t[name].shift();
+      r.chars -= cfg.weight(old);
+      r.dirty.delete(old);
+      r.deleted.add(old.id);
     }
-    t.logsDirty.add(l);
+    r.dirty.add(item);
     scheduleFlush(t);
-    return l;
+    return item;
   }
 
-  async function clearLogs(t) {
-    t.logs = [];
-    t.logChars = 0;
-    t.logsDirty.clear();
-    t.logsDeleted.clear();
+  // Updates a side-log row in place (a request that completed).
+  function touchIn(name, t, item) {
+    t.ring[name].dirty.add(item);
+    scheduleFlush(t);
+  }
+
+  async function clearRing(name, t) {
+    t[name] = [];
+    t.ring[name] = newRing();
     try {
       const d = await db();
-      const tx = d.transaction(["logs"], "readwrite");
-      tx.objectStore("logs").delete(IDBKeyRange.bound([t.tabId, -Infinity], [t.tabId, Infinity]));
+      const tx = d.transaction([name], "readwrite");
+      tx.objectStore(name).delete(IDBKeyRange.bound([t.tabId, -Infinity], [t.tabId, Infinity]));
       await txDone(tx);
     } catch (_) {}
   }
@@ -252,14 +278,15 @@ globalThis.__netscopeStore = (() => {
     return e;
   }
 
-  // withLogs: a page reload clears the console too; the Traffic Clear button doesn't.
-  async function clear(t, withLogs) {
+  // withSideLogs: a page reload clears the console and page requests too; the
+  // Traffic Clear button only clears API entries.
+  async function clear(t, withSideLogs) {
     t.gen++;
-    if (withLogs) {
-      t.logs = [];
-      t.logChars = 0;
-      t.logsDirty.clear();
-      t.logsDeleted.clear();
+    if (withSideLogs) {
+      for (const n of RING_NAMES) {
+        t[n] = [];
+        t.ring[n] = newRing();
+      }
     }
     t.entries = [];
     t.chars = 0;
@@ -273,7 +300,7 @@ globalThis.__netscopeStore = (() => {
       const tx = d.transaction(STORES, "readwrite");
       const range = IDBKeyRange.bound([t.tabId, -Infinity], [t.tabId, Infinity]);
       tx.objectStore("entries").delete(range);
-      if (withLogs) tx.objectStore("logs").delete(range);
+      if (withSideLogs) for (const n of RING_NAMES) tx.objectStore(n).delete(range);
       tx.objectStore("tabs").put(meta(t));
       await txDone(tx);
       t.metaDirty = false;
@@ -297,8 +324,9 @@ globalThis.__netscopeStore = (() => {
     try {
       const d = await db();
       const tx = d.transaction(STORES, "readwrite");
-      tx.objectStore("entries").delete(IDBKeyRange.bound([tabId, -Infinity], [tabId, Infinity]));
-      tx.objectStore("logs").delete(IDBKeyRange.bound([tabId, -Infinity], [tabId, Infinity]));
+      const range = IDBKeyRange.bound([tabId, -Infinity], [tabId, Infinity]);
+      tx.objectStore("entries").delete(range);
+      for (const n of RING_NAMES) tx.objectStore(n).delete(range);
       tx.objectStore("tabs").delete(tabId);
       await txDone(tx);
     } catch (_) {}
@@ -311,12 +339,24 @@ globalThis.__netscopeStore = (() => {
     try {
       const d = await db();
       const tx = d.transaction(STORES, "readwrite");
-      tx.objectStore("entries").clear();
-      tx.objectStore("logs").clear();
-      tx.objectStore("tabs").clear();
+      for (const n of STORES) tx.objectStore(n).clear();
       await txDone(tx);
     } catch (_) {}
   }
 
-  return { withTab, add, update, clear, setUi, drop, wipe, flush, addLog, clearLogs };
+  return {
+    withTab,
+    add,
+    update,
+    clear,
+    setUi,
+    drop,
+    wipe,
+    flush,
+    addLog: (t, l) => addTo("logs", t, l),
+    clearLogs: (t) => clearRing("logs", t),
+    addRes: (t, r) => addTo("res", t, r),
+    touchRes: (t, r) => touchIn("res", t, r),
+    clearRes: (t) => clearRing("res", t)
+  };
 })();

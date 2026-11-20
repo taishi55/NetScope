@@ -92,8 +92,8 @@
 
   /* ----------------------------------------------------------- overview */
 
-  async function toolOverview() {
-    const o = await inspect("overview");
+  async function toolOverview(a) {
+    const o = await inspect("overview", { frame_id: a && a.frame_id });
     const logs = api ? api.getLogs() : [];
     const errors = logs.filter((l) => l.level === "error");
     o.console = {
@@ -128,18 +128,18 @@
 
   /* ------------------------------------------------------- components */
 
-  const toolComponents = async (a) => out(await inspect("components", { max_depth: a.max_depth, max_nodes: a.max_nodes, filter: a.filter }), "Tree too large; lower max_nodes or set filter.");
+  const toolComponents = async (a) => out(await inspect("components", { max_depth: a.max_depth, max_nodes: a.max_nodes, filter: a.filter, frame_id: a.frame_id }), "Tree too large; lower max_nodes or set filter.");
 
   /* ------------------------------------------------------------- state */
 
-  const toolState = async (a) => out(await inspect("state", { source: a.source, path: a.path, max_depth: a.max_depth }), "State too large; go deeper with path (e.g. 'user.profile' or 'items.0').");
+  const toolState = async (a) => out(await inspect("state", { source: a.source, path: a.path, max_depth: a.max_depth, frame_id: a.frame_id }), "State too large; go deeper with path (e.g. 'user.profile' or 'items.0').");
 
   /* ----------------------------------------------------------- storage */
 
   async function toolStorage(a) {
     const area = String(a.area || "local");
     if (area === "local" || area === "session") {
-      const r = await inspect("storage", { area, key: a.key, limit: a.limit, offset: a.offset });
+      const r = await inspect("storage", { area, key: a.key, limit: a.limit, offset: a.offset, frame_id: a.frame_id });
       if (r.items) for (const it of r.items) it.preview = maskValue(it.key, it.preview);
       if (r.value != null) r.value = maskValue(r.key, r.value);
       return out(r, "Too many keys; page with offset/limit or read one key.");
@@ -153,14 +153,43 @@
       }
       return out(r);
     }
-    if (area === "indexeddb") return out(await inspect("idb", { db: a.db, store: a.store, limit: a.limit, offset: a.offset, max_depth: a.max_depth }), "Too many records; lower limit or page with offset.");
+    if (area === "indexeddb") return out(await inspect("idb", { db: a.db, store: a.store, limit: a.limit, offset: a.offset, max_depth: a.max_depth, frame_id: a.frame_id }), "Too many records; lower limit or page with offset.");
     if (area === "cache") return out(await inspect("cache", { cache: a.cache, limit: a.limit, offset: a.offset }));
     throw new Error("area must be local, session, cookies, indexeddb or cache");
   }
 
   /* --------------------------------------------------------------- DOM */
 
-  const toolDom = async (a) => out(await inspect("dom", { selector: a.selector, max_depth: a.max_depth, max_lines: a.max_lines, include_text: a.include_text }), "Outline too long; pass a selector for one region.");
+  const toolDom = async (a) => out(await inspect("dom", { selector: a.selector, max_depth: a.max_depth, max_lines: a.max_lines, include_text: a.include_text, frame_id: a.frame_id }), "Outline too long; pass a selector for one region.");
+
+  /* ----------------------------------------------- network and security */
+
+  async function toolNetwork(a) {
+    if (a.id != null) {
+      const r = await api.rpc("res.get", { id: a.id });
+      if (!r) throw new Error(`no recorded request with id ${a.id}`);
+      return out(Object.assign({}, r, { reqHeaders: T.redactHeaders(r.reqHeaders), resHeaders: T.redactHeaders(r.resHeaders), reqHeaderText: undefined, resHeaderText: undefined }));
+    }
+    const r = await api.rpc("res.list", { type: a.type, failed: a.failed, status: a.status, host: a.host, contains: a.contains, limit: a.limit, offset: a.offset });
+    if (!r.total) {
+      // Not recorded yet (NetScope opened after the page loaded): fall back to Resource Timing.
+      const rt = await inspect("resources", { limit: a.limit });
+      return out({ recording: r.recording, note: "No requests recorded for this tab yet — recording starts when NetScope opens on a tab; reload the page for the full list with status and headers. Showing the browser's Resource Timing instead.", resource_timing: rt }, "Too many resources; filter with type or contains.");
+    }
+    return out(r, "Too many requests; filter with type, failed, host or contains, or page with offset.");
+  }
+
+  const toolSecurity = async () => out(await api.rpc("res.security", {}));
+
+  /* ------------------------------------------------ elements and design */
+
+  const toolStyles = async (a) => out(await inspect("styles", { selector: a.selector, index: a.index, frame_id: a.frame_id }), "Too many matched rules; pick a more specific element.");
+  const toolDesign = async (a) => out(await inspect("design", { frame_id: a.frame_id }), "Design summary too large.");
+  const toolHandlers = async (a) => out(await inspect("handlers", { selector: a.selector, only_handled: a.only_handled, limit: a.limit, frame_id: a.frame_id }), "Too many elements; pass a selector or only_handled.");
+  const toolA11y = async (a) => out(await inspect("a11y", { frame_id: a.frame_id }), "Report too large.");
+  const toolPerf = async () => out(await inspect("performance"));
+  const toolFrames = async () => out(await inspect("frames"));
+  const toolFlags = async (a) => out(await inspect("flags", { frame_id: a.frame_id }), "Too many flags; ask about one source.");
 
   /* ----------------------------------------------------------- sources */
 
@@ -176,11 +205,13 @@
     function: { name, description, parameters: { type: "object", properties: properties || {}, required: required || [], additionalProperties: false } }
   });
 
+  const FRAME = { frame_id: { type: "integer", description: "Inspect this frame instead of the top page (ids from list_frames)." } };
+
   const DEFS = [
     fn(
       "get_app_overview",
       "Start here to understand the app as a whole: frameworks and versions (React, Next.js, Remix, Vue, Nuxt, Angular, SvelteKit, …), build info (Next buildId, data fetching mode, public runtime config), third-party services (analytics, auth, payments, error tracking, feature flags), meta tags, inline JSON data, scripts, a storage summary (local/session/cookies/IndexedDB/Cache/service workers), DOM stats, performance timings, first- vs third-party hosts, app-defined globals, and console error counts.",
-      {}
+      Object.assign({}, FRAME)
     ),
     fn(
       "get_console_logs",
@@ -205,7 +236,8 @@
       {
         filter: { type: "string", description: "Only components whose name contains this." },
         max_nodes: { type: "integer", description: "Default 300, max 2000." },
-        max_depth: { type: "integer", description: "Default 40." }
+        max_depth: { type: "integer", description: "Default 40." },
+        frame_id: FRAME.frame_id
       }
     ),
     fn(
@@ -214,7 +246,8 @@
       {
         source: { type: "string", description: "e.g. 'redux', 'react_query', 'apollo', 'next_data', 'pinia', 'window.__INITIAL_STATE__'." },
         path: { type: "string", description: "Dot path inside it, e.g. 'user.profile' or 'items.0'." },
-        max_depth: { type: "integer", description: "Default 4, max 8." }
+        max_depth: { type: "integer", description: "Default 4, max 8." },
+        frame_id: FRAME.frame_id
       }
     ),
     fn(
@@ -228,7 +261,8 @@
         cache: { type: "string", description: "cache: one cache's name." },
         limit: { type: "integer" },
         offset: { type: "integer" },
-        max_depth: { type: "integer", description: "indexeddb: depth of record values. Default 4." }
+        max_depth: { type: "integer", description: "indexeddb: depth of record values. Default 4." },
+        frame_id: FRAME.frame_id
       },
       ["area"]
     ),
@@ -239,8 +273,60 @@
         selector: { type: "string", description: "CSS selector of one region (default: the whole body)." },
         max_lines: { type: "integer", description: "Default 260, max 800." },
         max_depth: { type: "integer", description: "Default 12." },
-        include_text: { type: "boolean", description: "Include heading/button/link text. Default true." }
+        include_text: { type: "boolean", description: "Include heading/button/link text. Default true." },
+        frame_id: FRAME.frame_id
       }
+    ),
+    fn(
+      "get_network_requests",
+      "Every request the tab made, like DevTools' Network panel: the page document, scripts, stylesheets, images, fonts, media, iframes, beacons, EventSource, Web Worker and Service Worker requests — type, method, status, size, time, cache, redirects and errors (no bodies; fetch/XHR bodies are in list_requests / get_request). With id: one request's full request and response headers. Recording starts when NetScope opens on the tab.",
+      {
+        type: { type: "string", enum: ["all", "main_frame", "sub_frame", "script", "stylesheet", "image", "font", "xmlhttprequest", "media", "ping", "websocket", "other"] },
+        failed: { type: "boolean", description: "Only errors and 4xx/5xx." },
+        status: { type: "string", description: "Status class, e.g. '3' for redirects." },
+        host: { type: "string" },
+        contains: { type: "string", description: "URL substring." },
+        id: { type: "integer", description: "One request with all headers." },
+        limit: { type: "integer", description: "Default 80, max 400." },
+        offset: { type: "integer" }
+      }
+    ),
+    fn(
+      "get_security_report",
+      "The page document's security headers analysed (CSP directives and weaknesses, HSTS, framing, nosniff, referrer and permissions policies, COOP/COEP/CORP), cookies it sets with their flags, CORS policy per API host, and hosting/backend fingerprints (Server, X-Powered-By, CDN and platform headers, framework session cookies) for this site and third parties — evidence for how the backend is built.",
+      {}
+    ),
+    fn(
+      "get_styles",
+      "One element as the Elements panel's Styles/Computed panes show it: its box (position, size, visibility), computed CSS that differs from defaults, the stylesheet rules that match it (with file and @media), inline style and CSS variables in scope.",
+      Object.assign({ selector: { type: "string", description: "CSS selector." }, index: { type: "integer", description: "Which match (0-based). Default 0." } }, FRAME),
+      ["selector"]
+    ),
+    fn(
+      "get_design_system",
+      "The design system as used: CSS variables / design tokens by prefix, text and background color palette, font families and loaded fonts, font-size scale, border radii, shadows, breakpoints, dark-mode support, flex vs grid usage, and the CSS approach (Tailwind, Bootstrap, MUI, Chakra, Radix/shadcn, styled-components, Emotion, CSS Modules, scoped styles, icon sets).",
+      Object.assign({}, FRAME)
+    ),
+    fn(
+      "get_event_handlers",
+      "What each button, link, input and form does: the handlers attached through React/Vue props (with the component that rendered it), Angular (dev mode), jQuery, inline on* attributes and htmx/Alpine/Livewire/Stimulus attributes, plus link targets and form actions.",
+      Object.assign({ selector: { type: "string", description: "Only inside this region." }, only_handled: { type: "boolean", description: "Skip elements with no handler or target." }, limit: { type: "integer", description: "Default 150, max 400." } }, FRAME)
+    ),
+    fn(
+      "get_accessibility_report",
+      "An accessibility audit: landmarks, heading outline (skipped levels, h1 count), every control's role and accessible name, missing names and alt text, duplicate ids, positive tabindex, focusable elements inside aria-hidden, and WCAG AA text contrast failures with the colors.",
+      Object.assign({}, FRAME)
+    ),
+    fn(
+      "get_performance_report",
+      "Core Web Vitals recorded from page start — LCP with its element, CLS with the elements that shifted, INP with the slow interaction (input delay, processing), FCP, TTFB, each rated — plus long tasks, long animation frames with the scripts and functions that blocked, JS heap over time, navigation timing, Server-Timing and the slowest resources.",
+      {}
+    ),
+    fn("list_frames", "Every frame in the tab (iframes, including cross-origin ones) with its URL, title, frameworks, forms, inputs and scripts. Pass a frame_id to the other inspection tools to read that frame.", {}),
+    fn(
+      "get_flags_and_i18n",
+      "Feature flags and experiments (LaunchDarkly, GrowthBook, Optimizely, PostHog, Flagsmith, Statsig, Split, Unleash, ConfigCat, and flag-like storage keys and cookies) with their current values; internationalisation (html lang/dir, i18next / react-intl / vue-i18n / Next.js locales with sample keys, hreflang alternates, Intl locale and time zone); Web/Shared Workers the page started and its EventSource streams.",
+      Object.assign({}, FRAME)
     ),
     fn(
       "list_sources",
@@ -287,6 +373,15 @@
     get_app_state: toolState,
     get_storage: toolStorage,
     get_dom_outline: toolDom,
+    get_network_requests: toolNetwork,
+    get_security_report: toolSecurity,
+    get_styles: toolStyles,
+    get_design_system: toolDesign,
+    get_event_handlers: toolHandlers,
+    get_accessibility_report: toolA11y,
+    get_performance_report: toolPerf,
+    list_frames: toolFrames,
+    get_flags_and_i18n: toolFlags,
     list_sources: toolListSources,
     search_sources: toolSearchSources,
     read_source: toolReadSource

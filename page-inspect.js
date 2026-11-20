@@ -21,6 +21,18 @@
  *   dom         semantic outline: landmarks, headings, forms, tables, lists
  *   scripts     script tags, inline scripts, loaded chunks, import maps
  *   globals     window properties the app added (diffed against a blank frame)
+ *   styles      one element: box, computed CSS, matched rules, variables
+ *   design      design tokens (CSS variables), colors, fonts, type scale,
+ *               radii, shadows, breakpoints, CSS framework / approach
+ *   handlers    interactive elements and what handles them (React/Vue/
+ *               Angular/jQuery/inline/htmx…)
+ *   a11y        accessibility audit: names, landmarks, headings, alt, ids,
+ *               tabindex, WCAG contrast
+ *   performance Web Vitals (recorded from page start by net-hook.js), long
+ *               tasks and animation frames, heap over time
+ *   resources   Resource Timing for everything the page loaded
+ *   frame       a one-frame summary (run in every frame for the frame list)
+ *   flags       feature flags and experiments, i18n, workers, event streams
  */
 "use strict";
 
@@ -1285,6 +1297,542 @@ globalThis.__netscopeInspector = async function netscopeInspect(op, args) {
     return { root: args.selector || "body", lines: lines.length, truncated: lines.length >= maxLines, outline: lines.join("\n") };
   }
 
+  /* ----------------------------------------------------------- styles */
+
+  const describeEl = (el) => {
+    if (!el || el.nodeType !== 1) return "";
+    let s = el.tagName.toLowerCase();
+    if (el.id) s += "#" + el.id;
+    const cls = typeof el.className === "string" ? el.className.trim().split(/\s+/).filter(Boolean).slice(0, 3) : [];
+    if (cls.length) s += "." + cls.join(".");
+    return s;
+  };
+  const elText = (el, n) => clip((el.innerText || el.textContent || "").trim().replace(/\s+/g, " "), n || 60);
+
+  // Rules from every readable stylesheet, @media/@supports/@layer included.
+  function eachRule(fn) {
+    const notes = [];
+    const walk = (rules, ctx) => {
+      for (const r of rules) {
+        if (r.cssRules && (r.media || r.conditionText !== undefined || r.name !== undefined) && !r.selectorText) walk(r.cssRules, (ctx ? ctx + " " : "") + (r.media ? "@media " + r.media.mediaText : r.conditionText ? "@supports " + r.conditionText : r.name ? "@layer " + r.name : ""));
+        else fn(r, ctx);
+      }
+    };
+    for (const sheet of D.styleSheets) {
+      let rules;
+      try {
+        rules = sheet.cssRules;
+      } catch (_) {
+        notes.push("not readable (cross-origin): " + clip(sheet.href, 120));
+        continue;
+      }
+      walk(rules, "");
+    }
+    return notes;
+  }
+
+  const STYLE_PROPS = ["display", "position", "top", "right", "bottom", "left", "z-index", "box-sizing", "width", "height", "min-width", "max-width", "min-height", "max-height", "margin", "padding", "border", "border-radius", "box-shadow", "color", "background-color", "background-image", "opacity", "font-family", "font-size", "font-weight", "line-height", "letter-spacing", "text-align", "text-transform", "white-space", "overflow", "flex", "flex-direction", "flex-wrap", "justify-content", "align-items", "gap", "grid-template-columns", "grid-template-rows", "grid-area", "transform", "transition", "animation", "cursor", "pointer-events", "visibility", "content-visibility", "contain", "aspect-ratio", "object-fit", "filter", "backdrop-filter"];
+  const DULL = /^(none|normal|auto|0px|0|visible|static|start|stretch|nowrap|baseline|content-box|row|initial|ltr|1|0s|all 0s ease 0s|none 0s ease 0s 1 normal none running)$/;
+
+  function styles() {
+    const all = D.querySelectorAll(String(args.selector || "body"));
+    const el = all[Math.min(all.length - 1, Math.max(0, Number(args.index) || 0))];
+    if (!el) return { error: "no element matches " + args.selector };
+    const cs = getComputedStyle(el);
+    const computed = {};
+    for (const p of STYLE_PROPS) {
+      const v = cs.getPropertyValue(p);
+      if (v && !DULL.test(v.trim())) computed[p] = clip(v, 200);
+    }
+    const r = el.getBoundingClientRect();
+    const matched = [];
+    const notes = eachRule((rule, ctx) => {
+      if (!rule.selectorText || matched.length >= 40) return;
+      let ok = false;
+      try {
+        ok = el.matches(rule.selectorText);
+      } catch (_) {}
+      if (ok && (!ctx.startsWith("@media") || W.matchMedia(ctx.replace(/^@media /, "").split(" @")[0]).matches)) {
+        const sheet = rule.parentStyleSheet;
+        matched.push({ selector: clip(rule.selectorText, 160), where: (sheet && sheet.href ? basename(sheet.href) : "inline <style>") + (ctx ? " " + ctx : ""), css: clip(rule.style.cssText, 400) });
+      }
+    });
+    const vars = [];
+    for (const n of Array.from(cs).filter((p) => p.startsWith("--")).slice(0, 40)) vars.push(`${n}: ${clip(cs.getPropertyValue(n).trim(), 80)}`);
+    return {
+      element: describeEl(el),
+      matches: all.length,
+      text: elText(el, 80) || undefined,
+      box: { x: Math.round(r.x), y: Math.round(r.y), width: Math.round(r.width), height: Math.round(r.height), visible: r.width > 0 && r.height > 0 && cs.visibility !== "hidden" },
+      computed,
+      inline_style: el.getAttribute("style") ? clip(el.getAttribute("style"), 400) : undefined,
+      matched_rules: matched.reverse(),
+      custom_properties_in_scope: vars.length ? vars : undefined,
+      unreadable_stylesheets: notes.length ? notes.slice(0, 10) : undefined
+    };
+  }
+
+  const toHex = (c) => {
+    const m = /rgba?\(([\d.]+)[ ,]+([\d.]+)[ ,]+([\d.]+)(?:[ ,/]+([\d.]+))?\)/.exec(c || "");
+    if (!m) return c;
+    if (m[4] !== undefined && Number(m[4]) === 0) return null;
+    const hex = "#" + [m[1], m[2], m[3]].map((x) => Math.round(Number(x)).toString(16).padStart(2, "0")).join("");
+    return m[4] !== undefined && Number(m[4]) < 1 ? hex + " @" + Number(m[4]).toFixed(2) : hex;
+  };
+  const top = (map, n) =>
+    Object.entries(map)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, n)
+      .map(([k, v]) => `${k} ×${v}`);
+
+  function design() {
+    const out = {};
+    // CSS variables declared on :root / html — usually the design tokens.
+    const rootVars = new Set();
+    const media = {};
+    let darkMode = false;
+    const notes = eachRule((rule, ctx) => {
+      if (ctx.startsWith("@media")) {
+        for (const m of ctx.match(/\((?:min|max)-width:\s*[\d.]+(?:px|em|rem)\)/g) || []) media[m] = (media[m] || 0) + 1;
+        if (/prefers-color-scheme:\s*dark/.test(ctx)) darkMode = true;
+      }
+      if (rule.selectorText && /(^|,)\s*(:root|html)(\[[^\]]*\]|\.[\w-]+)?\s*(,|$)/.test(rule.selectorText)) for (const p of Array.from(rule.style)) if (p.startsWith("--")) rootVars.add(p);
+    });
+    const rcs = getComputedStyle(D.documentElement);
+    const tokens = {};
+    for (const n of Array.from(rootVars).slice(0, 400)) {
+      const group = (/^--([a-z]+)/i.exec(n) || [, "other"])[1];
+      (tokens[group] = tokens[group] || []).push(`${n}: ${clip(rcs.getPropertyValue(n).trim(), 60)}`);
+    }
+    out.css_variables = { count: rootVars.size, by_prefix: tokens };
+    // What the rendered page actually uses.
+    const colors = {};
+    const bgs = {};
+    const fonts = {};
+    const sizes = {};
+    const radii = {};
+    const shadows = {};
+    const layouts = { flex: 0, grid: 0 };
+    const els = D.body ? D.body.getElementsByTagName("*") : [];
+    const n = Math.min(els.length, 2500);
+    for (let i = 0; i < n; i++) {
+      const el = els[i];
+      const cs = getComputedStyle(el);
+      if (cs.display === "none") continue;
+      if (cs.display.includes("flex")) layouts.flex++;
+      if (cs.display.includes("grid")) layouts.grid++;
+      const hasText = Array.from(el.childNodes).some((c) => c.nodeType === 3 && c.nodeValue.trim());
+      if (hasText) {
+        const c = toHex(cs.color);
+        if (c) colors[c] = (colors[c] || 0) + 1;
+        const f = cs.fontFamily.split(",")[0].replace(/["']/g, "").trim();
+        fonts[f] = (fonts[f] || 0) + 1;
+        sizes[cs.fontSize] = (sizes[cs.fontSize] || 0) + 1;
+      }
+      const b = toHex(cs.backgroundColor);
+      if (b) bgs[b] = (bgs[b] || 0) + 1;
+      if (cs.borderRadius && cs.borderRadius !== "0px") radii[cs.borderRadius] = (radii[cs.borderRadius] || 0) + 1;
+      if (cs.boxShadow && cs.boxShadow !== "none") shadows[clip(cs.boxShadow, 80)] = (shadows[clip(cs.boxShadow, 80)] || 0) + 1;
+    }
+    out.text_colors = top(colors, 14);
+    out.background_colors = top(bgs, 14);
+    out.font_families = top(fonts, 8);
+    out.font_sizes = top(sizes, 12);
+    out.border_radii = top(radii, 8);
+    out.shadows = top(shadows, 6);
+    out.layout = { flex_containers: layouts.flex, grid_containers: layouts.grid, sampled_elements: n };
+    out.breakpoints = top(media, 12);
+    out.dark_mode = darkMode || /dark/.test(rcs.colorScheme || "") || undefined;
+    try {
+      out.loaded_fonts = Array.from(D.fonts || [])
+        .filter((f) => f.status === "loaded")
+        .slice(0, 30)
+        .map((f) => `${f.family.replace(/["']/g, "")} ${f.weight}${f.style !== "normal" ? " " + f.style : ""}`);
+    } catch (_) {}
+    // CSS frameworks and styling approaches, by their fingerprints.
+    const cls = Array.from(D.querySelectorAll("[class]")).slice(0, 3000).map((e) => (typeof e.className === "string" ? e.className : "")).join(" ");
+    const fw = [];
+    const tw = (cls.match(/(?:^|\s)(?:[a-z]+:)*(?:p|m|px|py|mt|mb|ml|mr|gap|w|h|text|bg|rounded|flex|grid|items|justify)-[\w./[\]-]+/g) || []).length;
+    if (tw > 30 || rootVars.has("--tw-ring-color") || /--tw-/.test(D.documentElement.getAttribute("style") || "")) fw.push(`Tailwind CSS (≈${tw} utility classes)`);
+    if (/\b(btn btn-|col-(sm|md|lg)-|navbar-expand)/.test(cls)) fw.push("Bootstrap");
+    if (/\bMui[A-Z]/.test(cls)) fw.push("Material UI");
+    if (/\bchakra-/.test(cls)) fw.push("Chakra UI");
+    if (/\bant-[a-z]/.test(cls)) fw.push("Ant Design");
+    if (/\bmantine-/.test(cls)) fw.push("Mantine");
+    if (D.querySelector("[data-radix-popper-content-wrapper], [data-radix-collection-item], [data-radix-scroll-area-viewport], [id^='radix-'], [aria-controls^='radix-']")) fw.push("Radix UI (shadcn/ui likely if with Tailwind)");
+    if (D.querySelector("style[data-styled], style[data-styled-version]")) fw.push("styled-components");
+    if (D.querySelector("style[data-emotion]")) fw.push("Emotion");
+    if (/\b[a-zA-Z]+_[a-zA-Z]+__[a-zA-Z0-9_-]{5}\b/.test(cls)) fw.push("CSS Modules (hashed class names)");
+    if (/\bsvelte-[a-z0-9]{5,}\b/.test(cls)) fw.push("Svelte scoped styles");
+    if (D.querySelector("[data-v-app], [class*='data-v-']") || Array.from(D.querySelectorAll("*")).slice(0, 500).some((e) => Array.from(e.attributes).some((a) => /^data-v-[a-f0-9]{8}$/.test(a.name)))) fw.push("Vue scoped styles");
+    if (/\bis-(primary|link)\b.*\bcolumns\b|\bbulma\b/.test(cls)) fw.push("Bulma");
+    if (D.querySelector("link[href*='fonts.googleapis.com']")) fw.push("Google Fonts");
+    if (/\bfa-(solid|regular|brands|[a-z-]+)\b/.test(cls)) fw.push("Font Awesome icons");
+    if (/\bmaterial-(icons|symbols)/.test(cls)) fw.push("Material icons");
+    out.css_approach = fw;
+    out.stylesheets = Array.from(D.styleSheets)
+      .slice(0, 30)
+      .map((s) => {
+        let rules = "?";
+        try {
+          rules = s.cssRules.length;
+        } catch (_) {}
+        return `${s.href ? clip(s.href, 120) : "<style> " + clip((s.ownerNode && s.ownerNode.textContent) || "", 0).length} rules:${rules}${s.media && s.media.mediaText ? " media:" + s.media.mediaText : ""}`;
+      });
+    if (notes.length) out.unreadable_stylesheets = notes.slice(0, 10);
+    return out;
+  }
+
+  /* --------------------------------------------------------- handlers */
+
+  function handlersOf(el) {
+    const out = [];
+    const pk = keyWith(el, "__reactProps$");
+    if (pk) {
+      const props = own(el, pk) || {};
+      for (const k of safeKeys(props)) {
+        if (!/^on[A-Z]/.test(k)) continue;
+        const fn = own(props, k);
+        if (typeof fn === "function") out.push(`${k}: ${fn.name || "anonymous"}`);
+      }
+      // The component that rendered it: the nearest function component above.
+      const fk = keyWith(el, "__reactFiber$");
+      let f = fk ? own(el, fk) : null;
+      for (let i = 0; f && i < 60; i++, f = f.return) {
+        if (f.tag === 0 || f.tag === 1 || f.tag === 11 || f.tag === 15) {
+          out.push("in " + fiberName(f));
+          break;
+        }
+      }
+    }
+    // Vue 3 keeps listeners in el._vei (a Symbol("_vei") since 3.4).
+    let vei = own(el, "_vei");
+    if (!vei) {
+      try {
+        const sym = Object.getOwnPropertySymbols(el).find((s) => s.description === "_vei");
+        if (sym) vei = el[sym];
+      } catch (_) {}
+    }
+    if (vei && isObj(vei)) {
+      for (const k of safeKeys(vei)) {
+        const inv = own(vei, k);
+        const fn = inv && own(inv, "value");
+        out.push(`${k}: ${(fn && fn.name) || "handler"}`);
+      }
+      const comp = own(el, "__vueParentComponent");
+      if (comp) out.push("in " + vueName(own(comp, "type")));
+    }
+    try {
+      const jq = W.jQuery && W.jQuery._data && W.jQuery._data(el, "events");
+      if (jq) for (const k of Object.keys(jq)) out.push(`jQuery ${k} ×${jq[k].length}`);
+    } catch (_) {}
+    try {
+      if (W.ng && typeof W.ng.getListeners === "function") for (const l of W.ng.getListeners(el) || []) out.push(`(${l.name}): ${(l.callback && l.callback.name) || "handler"}`);
+    } catch (_) {}
+    for (const a of Array.from(el.attributes)) if (/^on[a-z]+$/.test(a.name)) out.push(`${a.name}="${clip(a.value, 80)}"`);
+    for (const a of Array.from(el.attributes)) if (/^(hx-(get|post|put|patch|delete)|wire:click|x-on:|@click|data-action|phx-click)/.test(a.name)) out.push(`${a.name}="${clip(a.value, 80)}"`);
+    return out;
+  }
+
+  function handlers() {
+    const root = args.selector ? D.querySelector(String(args.selector)) : D.body;
+    if (!root) return { error: "no element matches " + args.selector };
+    const els = root.querySelectorAll("button, a[href], input, select, textarea, summary, [role=button], [role=link], [role=tab], [role=menuitem], [role=switch], [role=checkbox], [onclick], [tabindex]:not([tabindex='-1']), form");
+    const rows = [];
+    let withHandlers = 0;
+    for (const el of els) {
+      if (rows.length >= Math.min(Number(args.limit) || 150, 400)) break;
+      const hs = handlersOf(el);
+      if (hs.some((h) => !h.startsWith("in "))) withHandlers++;
+      const tag = el.tagName.toLowerCase();
+      const label = el.getAttribute("aria-label") || (tag === "input" ? el.name || el.type : "") || elText(el, 50);
+      const extra = tag === "a" ? " → " + clip(el.getAttribute("href"), 100) : tag === "form" ? ` ${(el.getAttribute("method") || "GET").toUpperCase()} ${el.getAttribute("action") || "(JS)"}` : "";
+      if (!hs.length && !extra && args.only_handled) continue;
+      rows.push(`${describeEl(el)}${label ? ' "' + label + '"' : ""}${extra}${hs.length ? "  ⇒ " + hs.join(", ") : ""}`);
+    }
+    return { interactive: els.length, with_handlers: withHandlers, elements: rows, note: "Handler names come from React/Vue props, Angular dev mode, jQuery and inline attributes; production builds may minify them — search_sources finds the code." };
+  }
+
+  /* ----------------------------------------------------- accessibility */
+
+  function accName(el) {
+    const by = el.getAttribute("aria-labelledby");
+    if (by) {
+      const t = by
+        .split(/\s+/)
+        .map((id) => D.getElementById(id))
+        .filter(Boolean)
+        .map((x) => elText(x, 80))
+        .join(" ");
+      if (t) return t;
+    }
+    if (el.getAttribute("aria-label")) return el.getAttribute("aria-label").trim();
+    const tag = el.tagName.toLowerCase();
+    if (tag === "img" || (tag === "input" && el.type === "image")) return el.getAttribute("alt") || "";
+    if (/^(input|select|textarea)$/.test(tag)) {
+      if (el.id) {
+        const l = D.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+        if (l && elText(l)) return elText(l);
+      }
+      const wrap = el.closest("label");
+      if (wrap && elText(wrap)) return elText(wrap);
+      if (el.type === "submit" || el.type === "button") return el.value || "";
+      return el.getAttribute("title") || "";
+    }
+    const svgTitle = el.querySelector && el.querySelector("svg title");
+    return elText(el, 80) || el.getAttribute("title") || (svgTitle ? svgTitle.textContent.trim() : "");
+  }
+
+  const lum = (hex) => {
+    const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})/i.exec(hex || "");
+    if (!m) return null;
+    const c = [m[1], m[2], m[3]].map((x) => {
+      const v = parseInt(x, 16) / 255;
+      return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+    });
+    return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  };
+  function bgOf(el) {
+    for (let e = el; e && e.nodeType === 1; e = e.parentElement) {
+      const cs = getComputedStyle(e);
+      if (cs.backgroundImage && cs.backgroundImage !== "none") return null; // an image: can't judge
+      const h = toHex(cs.backgroundColor);
+      if (h && !h.includes("@")) return h;
+    }
+    return "#ffffff";
+  }
+
+  function a11y() {
+    const issues = [];
+    const add = (kind, el, detail) => issues.length < 120 && issues.push(`${kind}: ${describeEl(el)}${detail ? " — " + detail : ""}`);
+    const lang = D.documentElement.getAttribute("lang");
+    if (!lang) issues.push("page: <html> has no lang attribute");
+    if (!D.title.trim()) issues.push("page: empty <title>");
+    const landmarks = Array.from(D.querySelectorAll("header, nav, main, aside, footer, [role=banner], [role=navigation], [role=main], [role=complementary], [role=contentinfo], [role=search], form[aria-label], section[aria-label]")).map((el) => `${el.getAttribute("role") || el.tagName.toLowerCase()}${accName(el) && el.getAttribute("aria-label") ? ' "' + el.getAttribute("aria-label") + '"' : ""}`);
+    if (!D.querySelector("main, [role=main]")) issues.push("page: no <main> landmark");
+    const headings = Array.from(D.querySelectorAll("h1, h2, h3, h4, h5, h6, [role=heading]"));
+    let prev = 0;
+    const outline = [];
+    for (const h of headings.slice(0, 80)) {
+      const lvl = Number(h.getAttribute("aria-level")) || Number(h.tagName[1]) || 2;
+      if (prev && lvl > prev + 1) add("heading level skipped", h, `h${prev} → h${lvl}`);
+      prev = lvl;
+      outline.push("  ".repeat(lvl - 1) + `h${lvl} ${elText(h, 70)}`);
+    }
+    if (headings.filter((h) => h.tagName === "H1").length !== 1) issues.push(`page: ${headings.filter((h) => h.tagName === "H1").length} <h1> elements (expected 1)`);
+    for (const img of D.querySelectorAll("img")) if (!img.hasAttribute("alt") && img.getAttribute("role") !== "presentation" && img.getAttribute("aria-hidden") !== "true") add("image without alt", img, clip(img.currentSrc || img.src, 80));
+    const controls = [];
+    for (const el of D.querySelectorAll("button, a[href], input:not([type=hidden]), select, textarea, [role=button], [role=link], [role=checkbox], [role=switch], [role=tab], [role=menuitem], [role=combobox], [role=textbox]")) {
+      const name = accName(el).trim();
+      const role = el.getAttribute("role") || (el.tagName === "A" ? "link" : el.tagName === "INPUT" ? (el.type === "checkbox" || el.type === "radio" ? el.type : el.type === "submit" || el.type === "button" ? "button" : "textbox") : el.tagName.toLowerCase());
+      if (!name) add(`${role} without accessible name`, el);
+      if (controls.length < 150) controls.push(`${role} "${clip(name, 60)}"${el.disabled ? " (disabled)" : ""}`);
+      if (el.closest("[aria-hidden=true]") && !el.closest("[inert]") && el.getClientRects().length && getComputedStyle(el).visibility !== "hidden") add("focusable inside aria-hidden", el);
+      if (Number(el.getAttribute("tabindex")) > 0) add("positive tabindex", el, "tabindex=" + el.getAttribute("tabindex"));
+    }
+    const ids = {};
+    for (const el of D.querySelectorAll("[id]")) ids[el.id] = (ids[el.id] || 0) + 1;
+    for (const [id, n] of Object.entries(ids)) if (n > 1 && issues.length < 120) issues.push(`duplicate id "${id}" ×${n}`);
+    // Text contrast (WCAG AA), sampled.
+    let checked = 0;
+    let lowContrast = 0;
+    const els = D.body ? D.body.getElementsByTagName("*") : [];
+    for (let i = 0; i < els.length && checked < 600; i++) {
+      const el = els[i];
+      if (!Array.from(el.childNodes).some((c) => c.nodeType === 3 && c.nodeValue.trim().length > 1)) continue;
+      const cs = getComputedStyle(el);
+      if (cs.visibility === "hidden" || cs.display === "none" || Number(cs.opacity) === 0) continue;
+      const fg = toHex(cs.color);
+      const bg = bgOf(el);
+      if (!fg || !bg || fg.includes("@")) continue;
+      checked++;
+      const l1 = lum(fg);
+      const l2 = lum(bg);
+      if (l1 == null || l2 == null) continue;
+      const ratio = (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
+      const size = parseFloat(cs.fontSize);
+      const large = size >= 24 || (size >= 18.66 && Number(cs.fontWeight) >= 700);
+      if (ratio < (large ? 3 : 4.5)) {
+        lowContrast++;
+        if (lowContrast <= 25) add("low contrast", el, `${ratio.toFixed(2)}:1 (${fg} on ${bg}, ${cs.fontSize}) "${elText(el, 40)}"`);
+      }
+    }
+    return {
+      lang,
+      landmarks,
+      heading_outline: outline,
+      issues_count: issues.length,
+      issues,
+      contrast: { text_elements_checked: checked, below_aa: lowContrast },
+      controls,
+      note: "A static audit like axe's basics: names, landmarks, headings, alt text, ids, tabindex, contrast. Screen reader behaviour and keyboard traps need a manual check."
+    };
+  }
+
+  /* ------------------------------------------------------- performance */
+
+  function performanceReport() {
+    const p = own(W, "__netscopePerf");
+    const rate = (v, good, poor) => (v == null ? undefined : v <= good ? "good" : v <= poor ? "needs improvement" : "poor");
+    const nav = performance.getEntriesByType("navigation")[0];
+    const ttfb = nav ? Math.round(nav.responseStart) : null;
+    const out = {
+      recorded_from_page_start: !!p,
+      web_vitals: {
+        LCP: p && p.lcp ? Object.assign({ rating: rate(p.lcp.ms, 2500, 4000) }, p.lcp) : null,
+        CLS: p ? { value: +p.cls.toFixed(3), rating: rate(p.cls, 0.1, 0.25) } : null,
+        INP: p && p.inp ? Object.assign({ rating: rate(p.inp.ms, 200, 500), interactions: p.interactions }, p.inp) : p ? { note: `no interactions slower than 16 ms yet (${p.interactions} interactions)` } : null,
+        FCP: p && p.fcp != null ? { ms: p.fcp, rating: rate(p.fcp, 1800, 3000) } : null,
+        TTFB: ttfb != null ? { ms: ttfb, rating: rate(ttfb, 800, 1800) } : null
+      },
+      layout_shifts: p ? p.shifts : undefined,
+      long_tasks: p ? p.longTasks : undefined,
+      long_animation_frames: p && p.loafs.length ? p.loafs : undefined,
+      js_heap_mb_over_time: p && p.heap.length ? p.heap : undefined,
+      timings: perfSummary()
+    };
+    if (!p) out.note = "This page loaded before NetScope's hook was active (e.g. right after installing): reload it to record Web Vitals from the start.";
+    return out;
+  }
+
+  // Resource Timing: every resource the page loaded so far, even before NetScope recorded requests.
+  function resourceTiming() {
+    const rows = performance.getEntriesByType("resource").map((r) => ({
+      url: clip(r.name, 300),
+      type: r.initiatorType,
+      ms: Math.round(r.duration),
+      start: Math.round(r.startTime),
+      kb: Math.round((r.transferSize || 0) / 102.4) / 10,
+      status: r.responseStatus || undefined,
+      cache: r.transferSize === 0 && r.decodedBodySize > 0 ? "cache" : r.deliveryType || undefined,
+      protocol: r.nextHopProtocol || undefined,
+      render_blocking: r.renderBlockingStatus === "blocking" || undefined
+    }));
+    return { count: rows.length, resources: rows.slice(-Math.min(Number(args.limit) || 300, 600)) };
+  }
+
+  /* ------------------------------------------------------------ frames */
+
+  function frameSummary() {
+    let fws = [];
+    try {
+      fws = detectFrameworks().map((f) => f.name + (f.version ? " " + f.version : ""));
+    } catch (_) {}
+    return {
+      url: location.href,
+      top: W === W.top,
+      title: clip(D.title, 120),
+      frameworks: fws,
+      size: `${W.innerWidth}×${W.innerHeight}`,
+      forms: D.forms.length,
+      inputs: D.querySelectorAll("input, select, textarea").length,
+      scripts: D.scripts.length,
+      text: elText(D.body || D.documentElement, 120)
+    };
+  }
+
+  /* ------------------------------------------- flags, i18n and workers */
+
+  function reactProps(test, max) {
+    const out = [];
+    for (const r of reactRootFibers()) {
+      walkFibers(
+        r,
+        (f) => {
+          if (out.length >= (max || 3)) return false;
+          const p = f.memoizedProps;
+          if (isObj(p) && test(p)) out.push(p);
+          return true;
+        },
+        40000
+      );
+    }
+    return out;
+  }
+
+  function flags() {
+    const out = { feature_flags: [], experiments: [], i18n: {}, workers: [] };
+    const add = (source, data) => out.feature_flags.push(Object.assign({ source }, data));
+    const tryCall = (fn) => {
+      try {
+        return fn();
+      } catch (_) {
+        return undefined;
+      }
+    };
+    // LaunchDarkly
+    const ld = reactProps((p) => (own(p, "ldClient") && typeof own(p, "ldClient").allFlags === "function") || (isObj(own(p, "value")) && own(own(p, "value"), "ldClient")), 1)[0];
+    const ldClient = ld && (own(ld, "ldClient") || own(own(ld, "value") || {}, "ldClient"));
+    if (ldClient) add("LaunchDarkly", { flags: toJson(tryCall(() => ldClient.allFlags()), 3) });
+    // GrowthBook
+    const gb = own(W, "_growthbook") || own(W, "growthbook") || (reactProps((p) => own(p, "growthbook") && typeof own(p, "growthbook").getFeatures === "function", 1)[0] || {}).growthbook;
+    if (gb && typeof gb.getFeatures === "function") {
+      const feats = tryCall(() => gb.getFeatures()) || {};
+      const values = {};
+      for (const k of Object.keys(feats).slice(0, 80)) values[k] = toJson(tryCall(() => gb.getFeatureValue(k, null)), 2);
+      add("GrowthBook", { features: values, attributes: toJson(tryCall(() => gb.getAttributes()), 2) });
+    }
+    // Optimizely Web
+    const opt = own(W, "optimizely");
+    if (opt && typeof opt.get === "function") {
+      const state = tryCall(() => opt.get("state"));
+      if (state) out.experiments.push({ source: "Optimizely", active: toJson(tryCall(() => state.getActiveExperimentIds()), 2), variations: toJson(tryCall(() => state.getVariationMap()), 3) });
+    }
+    // PostHog
+    const ph = own(W, "posthog");
+    if (ph && ph.featureFlags) add("PostHog", { flags: toJson(tryCall(() => ph.featureFlags.getFlagVariants()) || tryCall(() => ph.featureFlags.getFlags()), 3) });
+    // Flagsmith
+    const fs = own(W, "flagsmith");
+    if (fs && typeof fs.getAllFlags === "function") add("Flagsmith", { flags: toJson(tryCall(() => fs.getAllFlags()), 3) });
+    // Statsig / Split / Unleash / ConfigCat: detection only.
+    if (own(W, "__STATSIG__") || own(W, "statsig")) add("Statsig", { note: "client present; values are evaluated per check" });
+    if (own(W, "splitio")) add("Split", { note: "SDK present" });
+    if (own(W, "unleash")) add("Unleash", { note: "client present" });
+    if (own(W, "configcat")) add("ConfigCat", { note: "SDK present" });
+    // Storage keys that look like flags or experiment buckets.
+    const flagKeys = [];
+    for (const s of [W.localStorage, W.sessionStorage]) {
+      try {
+        for (let i = 0; i < s.length; i++) if (/flag|feature|experiment|variant|ab[-_]|split|toggle|rollout/i.test(s.key(i))) flagKeys.push(`${s === W.localStorage ? "local" : "session"}:${s.key(i)} = ${clip(s.getItem(s.key(i)), 120)}`);
+      } catch (_) {}
+    }
+    if (flagKeys.length) add("storage keys", { keys: flagKeys.slice(0, 40) });
+    const cookieFlags = (D.cookie || "").split(";").map((c) => c.trim()).filter((c) => /flag|feature|experiment|variant|ab[-_]|bucket/i.test(c.split("=")[0]));
+    if (cookieFlags.length) add("cookies", { cookies: cookieFlags.slice(0, 20).map((c) => clip(c, 120)) });
+
+    // i18n
+    const i = out.i18n;
+    i.html_lang = D.documentElement.lang || undefined;
+    i.dir = D.documentElement.dir || undefined;
+    i.browser_languages = navigator.languages;
+    try {
+      const ro = Intl.DateTimeFormat().resolvedOptions();
+      i.intl = { locale: ro.locale, time_zone: ro.timeZone };
+    } catch (_) {}
+    const alts = Array.from(D.querySelectorAll("link[rel=alternate][hreflang]")).map((l) => `${l.hreflang} → ${clip(l.href, 100)}`);
+    if (alts.length) i.hreflang_alternates = alts.slice(0, 40);
+    const nd = own(W, "__NEXT_DATA__");
+    if (nd && (nd.locale || nd.locales)) i.next = { locale: nd.locale, locales: nd.locales, defaultLocale: nd.defaultLocale };
+    const i18n = own(W, "i18next") || own(reactProps((p) => own(p, "i18n") && typeof own(p, "i18n").t === "function", 1)[0] || {}, "i18n");
+    if (i18n && typeof i18n.t === "function") {
+      const store = dig(i18n, ["store", "data"]) || {};
+      const lng = i18n.language;
+      const ns = store[lng] || {};
+      const keyCount = Object.values(ns).reduce((n, v) => n + (isObj(v) ? safeKeys(v).length : 0), 0);
+      i.i18next = { language: lng, languages: toJson(i18n.languages, 1), namespaces: safeKeys(ns), keys_loaded: keyCount, sample_keys: Object.entries(ns).flatMap(([n, v]) => safeKeys(v || {}).slice(0, 10).map((k) => n + ":" + k)).slice(0, 20) };
+    }
+    const intl = reactProps((p) => typeof own(p, "locale") === "string" && isObj(own(p, "messages")), 1)[0];
+    if (intl) i.react_intl = { locale: own(intl, "locale"), messages: safeKeys(own(intl, "messages")).length, sample_keys: safeKeys(own(intl, "messages")).slice(0, 15) };
+    const va = vueApp();
+    const vi18n = va && va.v === 3 ? vueGlobal(va.app, "$i18n") : null;
+    if (vi18n) i.vue_i18n = { locale: toJson(vi18n.locale, 1), available: toJson(vi18n.availableLocales, 1) };
+    // Workers
+    const p = own(W, "__netscopePerf");
+    out.workers = p ? p.workers : "unknown (page loaded before NetScope's hook)";
+    if (p && p.sse && p.sse.length) out.event_streams = p.sse;
+    return out;
+  }
+
   /* ------------------------------------------------------------- run */
 
   try {
@@ -1319,6 +1867,30 @@ globalThis.__netscopeInspector = async function netscopeInspect(op, args) {
         break;
       case "globals":
         result = appGlobals(args.filter);
+        break;
+      case "styles":
+        result = styles();
+        break;
+      case "design":
+        result = design();
+        break;
+      case "handlers":
+        result = handlers();
+        break;
+      case "a11y":
+        result = a11y();
+        break;
+      case "performance":
+        result = performanceReport();
+        break;
+      case "resources":
+        result = resourceTiming();
+        break;
+      case "frame":
+        result = frameSummary();
+        break;
+      case "flags":
+        result = flags();
         break;
       default:
         result = { error: "unknown inspector op " + op };

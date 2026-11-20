@@ -28,7 +28,11 @@ needed.
   stack (React, Next.js, Remix, Vue, Nuxt, Angular, SvelteKit, …), routes, the component tree,
   client state (Redux, React Query, Apollo, Next/Nuxt data, Pinia…), every kind of storage
   (local/session, cookies including HttpOnly, IndexedDB, Cache Storage, service workers), the
-  code with source maps, and a semantic DOM outline. The AI reads all of it too.
+  code with source maps, a semantic DOM outline, every request the tab makes (documents,
+  scripts, images, fonts, workers) with a security-header and hosting report, what each control
+  does, the design system, an accessibility audit, Core Web Vitals, frames, feature flags and
+  i18n. The AI reads all of it too. In the small popup, Traffic, Console and App sit in one
+  **Inspect** menu.
 - **Keep logs** — one switch in the popup header keeps the captured traffic, console and chat
   across page reloads and navigations.
 - **Traffic** — everything the old DevTools panel did, in the popup: full-text/regex search
@@ -346,6 +350,28 @@ read-only:
   search and read the original files with line numbers.
 - **DOM** — a semantic outline: landmarks, headings, navigation, forms with every field,
   tables, lists, dialogs, iframes and shadow roots.
+- **Handlers** — what each button, link, input and form does: React/Vue handler props with the
+  component that rendered them, Angular (dev), jQuery, inline and htmx/Alpine/Livewire hooks.
+- **Frames** — every iframe (cross-origin ones too); the AI can read any of them with `frame_id`.
+- **Flags & i18n** — feature flags and experiments (LaunchDarkly, GrowthBook, Optimizely,
+  PostHog, Flagsmith, …) with values, locales and translation libraries, workers and
+  EventSource streams.
+- **Network** — every request the tab made since NetScope opened on it: the page document,
+  scripts, styles, images, fonts, media, iframes, beacons, Web and Service Worker requests —
+  status, size, time, cache, redirects, errors and headers.
+- **Security** — the document's security headers checked (CSP, HSTS, framing, nosniff,
+  referrer, COOP/COEP), cookies it sets with their flags, CORS per API host, and hosting and
+  backend fingerprints (Server, X-Powered-By, CDN and platform headers, session cookie names).
+- **Design** — CSS variables and design tokens, the color palette, fonts, type scale, radii,
+  shadows, breakpoints and the CSS approach (Tailwind, Bootstrap, MUI, Radix/shadcn, CSS-in-JS…).
+- **Styles** — any element's box, computed CSS and matching rules.
+- **Accessibility** — landmarks, heading outline, controls and their accessible names, missing
+  alt text and labels, duplicate ids, and WCAG AA contrast failures.
+- **Performance** — LCP, CLS, INP, FCP and TTFB recorded from page start, with the element or
+  interaction responsible, long tasks and the scripts behind slow frames, and JS heap over time.
+
+Still out of reach without Chrome's debugger (which would show a warning bar on every page):
+CPU profiles, code coverage, Lighthouse audits and the console inside workers.
 
 **Ask … to map this app** asks the AI for a full write-up — stack, routes, components, state,
 storage, API endpoints, auth and what the server must be doing (marked as inferred) — saved
@@ -411,6 +437,8 @@ net-hook.js ─postMessage─▶ content.js ─sendMessage─▶ background.js �
 - `clipboardWrite` — the Copy buttons.
 - `cookies` — the App tab and the AI read the cookies the browser sends to the page you are on,
   including HttpOnly ones (values are masked for the AI when **Mask secrets** is on).
+- `webRequest` — observe-only: records the requests of tabs where you have opened NetScope
+  (documents, scripts, images, workers…) with status and headers. Nothing is blocked or changed.
 
 ## Privacy
 

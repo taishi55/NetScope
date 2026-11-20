@@ -357,7 +357,45 @@ window.addEventListener("message", (ev) => {
   if (["pill", "panel", "large", "hidden"].includes(d.mode)) applyMode(d.mode);
 });
 
+const INSPECT_VIEWS = { traffic: "Traffic", console: "Console", app: "App" };
+
+// The small popup shows one "Inspect" tab for Traffic, Console and App.
+function syncInspectTab() {
+  const tab = $("tab-inspect");
+  if (!tab) return;
+  const inside = !!INSPECT_VIEWS[currentView];
+  tab.setAttribute("aria-selected", inside ? "true" : "false");
+  $("inspectLabel").textContent = inside ? INSPECT_VIEWS[currentView] : "Inspect";
+  // Errors stay visible even when the Console is folded away.
+  const con = $("consoleCount");
+  const err = con && con.classList.contains("err") ? con.textContent : "";
+  $("inspectCount").textContent = err;
+  $("inspectCount").classList.toggle("err", !!err);
+}
+
+function setInspectMenu(open) {
+  const menu = $("inspectMenu");
+  const tab = $("tab-inspect");
+  if (!menu || !tab) return;
+  menu.hidden = !open;
+  tab.setAttribute("aria-expanded", open ? "true" : "false");
+  if (!open) return;
+  menu.style.left = tab.offsetLeft + "px";
+  for (const item of menu.querySelectorAll("[role=menuitem]")) {
+    const src = item.querySelector("[data-count]");
+    if (src) {
+      const from = $(src.dataset.count);
+      src.textContent = from ? from.textContent : "";
+      src.classList.toggle("err", !!(from && from.classList.contains("err")));
+    }
+    item.classList.toggle("current", item.dataset.view === currentView);
+  }
+  (menu.querySelector(".current") || menu.querySelector("[role=menuitem]")).focus();
+}
+
 function switchView(view) {
+  if (view === "inspect") return setInspectMenu($("inspectMenu").hidden);
+  setInspectMenu(false);
   currentView = view;
   for (const tab of document.querySelectorAll("#views [role=tab]")) {
     const on = tab.dataset.view === view;
@@ -371,6 +409,7 @@ function switchView(view) {
   if (window.__netscopeDocsUi && view === "docs") window.__netscopeDocsUi.onShown();
   if (window.__netscopeConsoleUi && view === "console") window.__netscopeConsoleUi.onShown();
   if (window.__netscopeAppUi && view === "app") window.__netscopeAppUi.onShown();
+  syncInspectTab();
 }
 
 /* ------------------------------------------------------------- trace */
@@ -1291,15 +1330,39 @@ function wireUi() {
   $("pillOpen").addEventListener("click", () => requestMode("panel"));
   $("pillClose").addEventListener("click", () => requestMode("hidden"));
 
-  const tabs = Array.from(document.querySelectorAll("#views [role=tab]"));
-  for (const tab of tabs) {
+  const allTabs = Array.from(document.querySelectorAll("#views [role=tab]"));
+  for (const tab of allTabs) {
     tab.addEventListener("click", () => switchView(tab.dataset.view));
     tab.addEventListener("keydown", (ev) => {
+      if (tab.id === "tab-inspect" && (ev.key === "ArrowDown" || ev.key === "Enter" || ev.key === " ")) {
+        ev.preventDefault();
+        return setInspectMenu(true);
+      }
       if (ev.key !== "ArrowRight" && ev.key !== "ArrowLeft") return;
+      // Only the tabs this popup size shows.
+      const tabs = allTabs.filter((t) => t.offsetParent !== null);
       const i = tabs.indexOf(tab);
       const next = tabs[(i + (ev.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length];
-      switchView(next.dataset.view);
+      if (next.id !== "tab-inspect") switchView(next.dataset.view);
       next.focus();
+    });
+  }
+  const menu = $("inspectMenu");
+  if (menu) {
+    for (const item of menu.querySelectorAll("[role=menuitem]")) item.addEventListener("click", () => switchView(item.dataset.view));
+    menu.addEventListener("keydown", (ev) => {
+      const items = Array.from(menu.querySelectorAll("[role=menuitem]"));
+      const i = items.indexOf(document.activeElement);
+      if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+        ev.preventDefault();
+        items[(i + (ev.key === "ArrowDown" ? 1 : items.length - 1)) % items.length].focus();
+      } else if (ev.key === "Escape" || ev.key === "Tab") {
+        setInspectMenu(false);
+        if (ev.key === "Escape") $("tab-inspect").focus();
+      }
+    });
+    document.addEventListener("pointerdown", (ev) => {
+      if (!menu.hidden && !menu.contains(ev.target) && ev.target.closest("#tab-inspect") === null) setInspectMenu(false);
     });
   }
 

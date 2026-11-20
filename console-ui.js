@@ -73,6 +73,7 @@ window.__netscopeConsoleUi = (() => {
     b.textContent = c.error ? String(c.error) : total ? String(total) : "";
     b.classList.toggle("err", !!c.error);
     b.title = c.error ? `${c.error} error${c.error === 1 ? "" : "s"}` : "";
+    if (typeof syncInspectTab === "function") syncInspectTab();
   }
 
   function schedule() {

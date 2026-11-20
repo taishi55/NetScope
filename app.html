@@ -28,6 +28,9 @@
       <symbol id="i-close" viewBox="0 0 24 24">
         <path d="M6 6l12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
       </symbol>
+      <symbol id="i-chev" viewBox="0 0 24 24">
+        <path d="M7 10l5 5 5-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+      </symbol>
       <symbol id="i-back" viewBox="0 0 24 24">
         <path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
       </symbol>
@@ -71,6 +74,16 @@
 
       <nav id="views" role="tablist" aria-label="NetScope">
         <button role="tab" id="tab-chat" data-view="chat" aria-selected="true" aria-controls="view-chat">Chat</button>
+        <!-- Small popup: Traffic, Console and App fold into this menu. -->
+        <button role="tab" id="tab-inspect" data-view="inspect" aria-selected="false" aria-haspopup="menu" aria-expanded="false" aria-controls="inspectMenu" title="Traffic, Console and App">
+          <span id="inspectLabel">Inspect</span> <span class="count" id="inspectCount"></span>
+          <svg aria-hidden="true"><use href="#i-chev" /></svg>
+        </button>
+        <div id="inspectMenu" role="menu" aria-label="Inspect" hidden>
+          <button role="menuitem" type="button" data-view="traffic"><span class="mi-name">Traffic</span><span class="mi-note">Requests and responses</span><span class="count" data-count="trafficCount"></span></button>
+          <button role="menuitem" type="button" data-view="console"><span class="mi-name">Console</span><span class="mi-note">Logs, errors and route changes</span><span class="count" data-count="consoleCount"></span></button>
+          <button role="menuitem" type="button" data-view="app"><span class="mi-name">App</span><span class="mi-note">Stack, routes, state, storage, code, design</span><span class="count"></span></button>
+        </div>
         <button role="tab" id="tab-traffic" data-view="traffic" aria-selected="false" aria-controls="view-traffic">
           Traffic <span class="count" id="trafficCount"></span>
         </button>
@@ -237,6 +250,7 @@
           <div class="pane-bar">
             <div class="row">
               <div id="appTabs" role="tablist" aria-label="Inspect"></div>
+              <label id="appSelectWrap"><span class="sr-only">Section</span><select id="appSelect" aria-label="App section"></select></label>
             </div>
             <div class="row sub">
               <span id="appStats" class="pane-stats"></span>

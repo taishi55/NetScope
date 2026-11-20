@@ -13,7 +13,7 @@ OR USE MUSE, WITH NO API KEY
 Prefer Meta's Muse? Sign in at muse.ai in a tab, keep it open (minimized is fine), and pick Muse in NetScope. NetScope talks to Muse in its own side chat, runs the same tools, and shows the answer right on the page.
 
 SEE THE WHOLE APP, NOT JUST ITS TRAFFIC
-A Console tab with every log, warning and error (with the file and line), uncaught exceptions, failed loads and route changes. An App tab that reads the page like DevTools' Elements, Application and Sources panels together: the framework and its version, routes, the component tree, client state (Redux, React Query, Apollo, Next/Nuxt data, Pinia…), local and session storage, cookies including HttpOnly, IndexedDB, Cache Storage, service workers, and the code — with source maps, the original source files. One click asks the AI to map the app and write it up.
+A Console tab with every log, warning and error (with the file and line), uncaught exceptions, failed loads and route changes. An App tab that reads the page like DevTools' Elements, Application and Sources panels together: the framework and its version, routes, the component tree, client state (Redux, React Query, Apollo, Next/Nuxt data, Pinia…), local and session storage, cookies including HttpOnly, IndexedDB, Cache Storage, service workers, and the code — with source maps, the original source files. Plus every request the tab makes with a security-header and hosting report, what each button does, the design system, an accessibility audit, Core Web Vitals with the elements responsible, frames, feature flags and i18n. One click asks the AI to map the app and write it up.
 
 CALL APIS LIKE POSTMAN
 Paste a cURL into the chat and Kimi runs it and explains the response, or ask it to replay a request the page made with different parameters. Or do it yourself: Edit & send turns any captured request into an editable cURL with a Send button. Requests run from the extension, so CORS doesn't get in the way. Kimi works on autopilot by default; one setting makes anything that changes data wait for your click.
@@ -79,3 +79,6 @@ Nothing is sold, nothing is shared with any other party, nothing is used for adv
 
 Permission "cookies":
 Shows the user the cookies their browser sends to the page they are inspecting (including HttpOnly cookies, with Secure/SameSite flags and expiry), in the App tab and to the optional AI assistant, so they can debug sessions and authentication. Read-only: NetScope never sets, changes or deletes cookies.
+
+Permission "webRequest":
+Observe-only. After the user opens NetScope on a tab, it records that tab's requests (page document, scripts, styles, images, fonts, worker requests) with status, timing and headers so the user can see them in the App tab and ask the AI about them. Nothing is blocked or modified, and tabs where NetScope was never opened are not recorded.

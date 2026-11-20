@@ -40,12 +40,20 @@ URLs, with the browser's cookies; they are kept in memory only, never on disk, a
 the worker stops. Reading is strictly read-only: NetScope writes no storage, cookies or
 databases of the site.
 
+Once you open NetScope on a tab, it also records **every request that tab makes** — the page
+document, scripts, styles, images, fonts, frames, beacons and Web/Service Worker requests —
+through Chrome's observe-only `webRequest` API: URL, method, type, status, timing, cache and IP,
+and the request and response headers, including `Cookie` and `Set-Cookie`. No bodies. Tabs
+where you never opened NetScope are not recorded. The page hook also keeps, in the page's own
+memory only, Web Vitals and long-task timings, the workers the page starts and its EventSource
+streams; the App tab and the AI read them on demand.
+
 Where it is kept:
 
-- **Capture log and console** — in the extension's IndexedDB on your machine, per tab. A new
-  page load starts a fresh log unless you turn on **Keep logs**. A tab's log is deleted when
+- **Capture log, console and page requests** — in the extension's IndexedDB on your machine,
+  per tab. A new page load starts a fresh log unless you turn on **Keep logs**. A tab's log is deleted when
   the tab closes, and the whole database is wiped each time the browser starts. Each tab keeps
-  at most the last 3,000 entries and 2,000 console messages.
+  at most the last 3,000 entries, 2,000 console messages and 4,000 page requests.
 - **Conversations** — every chat, including the traffic excerpts and tool results it contains,
   in the extension's IndexedDB until you delete it from History.
 - **Docs** — markdown notes the AI or you write in the Docs tab, in the extension's IndexedDB
@@ -78,8 +86,9 @@ NetScope sends to `https://api.moonshot.ai/v1/chat/completions`:
 - the parts of the captured traffic the model asks for through its tools — URLs, headers,
   request and response body fragments, WebSocket payloads,
 - what its inspection tools read from the page you are on — console messages, storage values,
-  cookies, IndexedDB records, app state, the DOM outline, and code from the page's scripts and
-  source maps,
+  cookies, IndexedDB records, app state, the DOM outline, styles, handlers, accessibility and
+  performance reports, feature flags, recorded page requests with their headers, and code from
+  the page's scripts and source maps,
 - the results of requests and flow runs it performs for you,
 - a short summary of the capture (counts, hosts, status codes).
 
@@ -172,6 +181,9 @@ used, flows that run by themselves or change data, and deleting flows — or for
 - **clipboardWrite** — the Copy buttons.
 - **cookies** — reads the cookies the browser sends to the page you are inspecting (including
   HttpOnly ones) for the App tab and the AI. NetScope never sets or deletes cookies.
+- **webRequest** — observes (never blocks or changes) the requests of tabs where you opened
+  NetScope, so the App tab and the AI see documents, scripts, images and worker requests with
+  their headers.
 
 ## Data collection
 

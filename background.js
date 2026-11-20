@@ -12,7 +12,7 @@
  */
 "use strict";
 
-importScripts("curl.js", "bg-store.js", "ai-client.js", "muse-client.js", "flow-engine.js", "page-inspect.js", "bg-sources.js");
+importScripts("curl.js", "bg-store.js", "bg-network.js", "ai-client.js", "muse-client.js", "flow-engine.js", "page-inspect.js", "bg-sources.js");
 
 const Store = globalThis.__netscopeStore;
 const Flows = globalThis.__netscopeFlows;
@@ -74,6 +74,8 @@ chrome.runtime.onConnect.addListener((port) => {
     return;
   }
   const tabId = tab.id;
+  // NetScope is open on this tab: record all of its requests from now on.
+  globalThis.__netscopeNet.arm(tabId, tab.url);
   let set = appPorts.get(tabId);
   if (!set) appPorts.set(tabId, (set = new Set()));
   set.add(port);
@@ -147,17 +149,25 @@ function handleEvent(tabId, frameId, ev) {
       case "page": {
         if (frameId !== 0) return { ui: t.ui };
         await prefsLoaded;
-        if (!prefs.preserve && (t.entries.length || t.logs.length)) {
+        if (!prefs.preserve && (t.entries.length || t.logs.length || t.res.length)) {
+          // The new document (and anything it already loaded) can finish before
+          // this event arrives: keep those page requests through the clear.
+          const docs = t.res.filter((r) => r.type === "main_frame" && Date.now() - r.startedAt < 60000);
+          const doc = docs[docs.length - 1];
+          const keep = doc ? t.res.filter((r) => r.startedAt >= doc.startedAt) : [];
           await Store.clear(t, true);
+          for (const r of keep) Store.addRes(t, r);
           broadcast(tabId, { type: "clear", logs: true, startedAt: t.startedAt });
         }
         globalThis.__netscopeSources.forget(tabId);
+        if (globalThis.__netscopeNet.isArmed(tabId)) globalThis.__netscopeNet.arm(tabId, ev.url);
         const e = Store.add(t, { kind: "nav", url: String(ev.url || ""), title: String(ev.title || ""), startedAt: ev.ts || Date.now() });
         broadcast(tabId, { type: "add", entry: e });
         return { ui: t.ui };
       }
       case "ui": {
         if (["hidden", "pill", "panel", "large"].includes(ev.mode)) Store.setUi(t, ev.mode);
+        if (ev.mode && ev.mode !== "hidden") globalThis.__netscopeNet.arm(tabId, ev.url);
         return null;
       }
       case "http-start": {
@@ -981,13 +991,22 @@ async function inspectTab(tabId, op, args) {
     throw new Error("This page can't be inspected (" + String(tab.url || "").split(":")[0] + " page). Open NetScope on the website itself.");
   }
   if (op === "cookies") return cookiesFor(tab.url, args);
-  const run = chrome.scripting.executeScript({
-    target: { tabId, frameIds: [0] },
-    world: "MAIN",
-    func: globalThis.__netscopeInspector,
-    args: [op, args || {}]
-  });
-  const res = await Promise.race([run, new Promise((_, reject) => setTimeout(() => reject(new Error("the page did not answer within 20 s")), 20000))]);
+  const timeout = (p) => Promise.race([p, new Promise((_, reject) => setTimeout(() => reject(new Error("the page did not answer within 20 s")), 20000))]);
+  // Every frame of the tab (cross-origin ones too: the extension can read them).
+  if (op === "frames") {
+    const res = await timeout(chrome.scripting.executeScript({ target: { tabId, allFrames: true }, world: "MAIN", func: globalThis.__netscopeInspector, args: ["frame", {}] }));
+    return { frames: (res || []).map((r) => Object.assign({ frame_id: r.frameId }, r.result || { error: "no answer (sandboxed or still loading)" })) };
+  }
+  // Any op can target one frame by its frame_id (from op "frames").
+  const frameId = Number.isInteger(args && args.frame_id) ? args.frame_id : 0;
+  const res = await timeout(
+    chrome.scripting.executeScript({
+      target: { tabId, frameIds: [frameId] },
+      world: "MAIN",
+      func: globalThis.__netscopeInspector,
+      args: [op, args || {}]
+    })
+  );
   const out = res && res[0] && res[0].result;
   if (!out) throw new Error("the inspector returned nothing (the page may be navigating)");
   return out;
@@ -1023,6 +1042,12 @@ async function handleRpc(tabId, method, p) {
   switch (method) {
     case "inspect":
       return inspectTab(tabId, String(p.op || ""), p.args || {});
+    case "res.list":
+      return Store.withTab(tabId, (t) => globalThis.__netscopeNet.list(t, p));
+    case "res.get":
+      return Store.withTab(tabId, (t) => globalThis.__netscopeNet.get(t, p.id));
+    case "res.security":
+      return Store.withTab(tabId, (t) => globalThis.__netscopeNet.security(t));
     case "sources.list":
       return globalThis.__netscopeSources.list(tabId, inspectTab, p);
     case "sources.search":
@@ -1198,6 +1223,7 @@ chrome.action.onClicked.addListener(toggle);
 chrome.tabs.onRemoved.addListener((tabId) => {
   Store.drop(tabId);
   globalThis.__netscopeSources.forget(tabId);
+  globalThis.__netscopeNet.disarm(tabId);
 });
 
 chrome.runtime.onStartup.addListener(() => {

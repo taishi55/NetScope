@@ -2623,3 +2623,116 @@ mark {
   white-space: nowrap;
   border: 0;
 }
+
+/* ------------------------- small popup: Traffic / Console / App menu */
+
+#views {
+  position: relative;
+}
+
+#tab-inspect {
+  display: none;
+  align-items: center;
+  gap: 3px;
+}
+
+#tab-inspect svg {
+  width: 14px;
+  height: 14px;
+  color: var(--ink-3);
+}
+
+body:not(.mode-large):not(.standalone) #tab-inspect {
+  display: inline-flex;
+}
+
+body:not(.mode-large):not(.standalone) #tab-traffic,
+body:not(.mode-large):not(.standalone) #tab-console,
+body:not(.mode-large):not(.standalone) #tab-app {
+  display: none;
+}
+
+#inspectMenu {
+  position: absolute;
+  top: calc(100% + 2px);
+  z-index: 30;
+  min-width: 250px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+}
+
+#inspectMenu[hidden] {
+  display: none;
+}
+
+#inspectMenu [role="menuitem"] {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-areas: "name count" "note count";
+  text-align: left;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  padding: 6px 9px;
+}
+
+#inspectMenu [role="menuitem"]:hover,
+#inspectMenu [role="menuitem"]:focus-visible {
+  background: var(--surface-2);
+}
+
+#inspectMenu [role="menuitem"].current .mi-name {
+  color: var(--signal-ink);
+}
+
+#inspectMenu .mi-name {
+  grid-area: name;
+  font-weight: 600;
+}
+
+#inspectMenu .mi-note {
+  grid-area: note;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
+#inspectMenu .count {
+  grid-area: count;
+  align-self: center;
+  margin-left: 12px;
+}
+
+/* App sections: chips when large, a grouped select in the small popup */
+#appSelectWrap {
+  display: none;
+}
+
+body:not(.mode-large):not(.standalone) #appTabs {
+  display: none;
+}
+
+body:not(.mode-large):not(.standalone) #appSelectWrap {
+  display: block;
+  flex: 1;
+}
+
+#appSelect {
+  width: 100%;
+  max-width: 320px;
+}
+
+/* App tables: words never split mid-word; long URLs wrap inside their code span */
+.app-md .msg-body th,
+.app-md .msg-body td {
+  word-break: normal;
+  overflow-wrap: normal;
+}
+
+.app-md .msg-body th {
+  white-space: nowrap;
+}

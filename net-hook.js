@@ -15,7 +15,9 @@
  *
  * It also mirrors the page's console (every level, with the calling source
  * line), uncaught errors and promise rejections, failed resource loads, CSP
- * violations and SPA route changes, in batches (type "console").
+ * violations and SPA route changes, in batches (type "console"); records Web
+ * Vitals, long tasks, heap and the workers the page starts (read later by the
+ * inspector); and mirrors EventSource streams like WebSocket frames.
  */
 (() => {
   "use strict";
@@ -711,6 +713,176 @@
     window.addEventListener("popstate", () => routed("popstate"));
     window.addEventListener("hashchange", () => routed("hashchange"));
     window.addEventListener("pagehide", flush);
+  })();
+
+  /* ------------------------------------- performance, workers, EventSource */
+
+  // Web Vitals and long work can only be seen from the start, so observers run
+  // from document_start and keep a small summary the inspector reads later
+  // (window.__netscopePerf, non-enumerable).
+  (() => {
+    const nativeSetInterval = window.setInterval.bind(window);
+    const perf = { lcp: null, fcp: null, cls: 0, shifts: [], inp: null, interactions: 0, longTasks: { count: 0, totalMs: 0, worst: [] }, loafs: [], heap: [], workers: [], sse: [] };
+    try {
+      Object.defineProperty(window, "__netscopePerf", { value: perf });
+    } catch (_) {
+      return;
+    }
+    const sel = (n) => {
+      try {
+        if (!n || n.nodeType !== 1) return n && n.nodeName ? n.nodeName.toLowerCase() : undefined;
+        let s = n.tagName.toLowerCase();
+        if (n.id) s += "#" + n.id;
+        else if (typeof n.className === "string" && n.className.trim()) s += "." + n.className.trim().split(/\s+/).slice(0, 2).join(".");
+        const text = (n.innerText || n.textContent || "").trim().replace(/\s+/g, " ").slice(0, 40);
+        return text ? `${s} "${text}"` : s;
+      } catch (_) {
+        return undefined;
+      }
+    };
+    const observe = (type, fn, extra) => {
+      try {
+        const po = new PerformanceObserver((list) => {
+          for (const e of list.getEntries()) {
+            try {
+              fn(e);
+            } catch (_) {}
+          }
+        });
+        po.observe(Object.assign({ type, buffered: true }, extra || {}));
+      } catch (_) {}
+    };
+    observe("paint", (e) => {
+      if (e.name === "first-contentful-paint") perf.fcp = Math.round(e.startTime);
+    });
+    observe("largest-contentful-paint", (e) => {
+      perf.lcp = { ms: Math.round(e.startTime), size: e.size, element: sel(e.element), url: e.url || undefined };
+    });
+    // CLS: the largest session window (gaps < 1 s, windows < 5 s).
+    let win = 0;
+    let first = 0;
+    let last = 0;
+    observe("layout-shift", (e) => {
+      if (e.hadRecentInput) return;
+      if (win && e.startTime - last < 1000 && e.startTime - first < 5000) win += e.value;
+      else {
+        win = e.value;
+        first = e.startTime;
+      }
+      last = e.startTime;
+      perf.cls = Math.max(perf.cls, win);
+      if (perf.shifts.length < 25 && e.value >= 0.001) perf.shifts.push({ ms: Math.round(e.startTime), value: +e.value.toFixed(4), moved: (e.sources || []).slice(0, 3).map((x) => sel(x.node)).filter(Boolean) });
+    });
+    // INP: the slowest interaction (close to the 98th percentile for typical sessions).
+    const seen = new Set();
+    observe(
+      "event",
+      (e) => {
+        if (!e.interactionId) return;
+        if (!seen.has(e.interactionId)) {
+          seen.add(e.interactionId);
+          perf.interactions++;
+        }
+        if (!perf.inp || e.duration > perf.inp.ms) {
+          perf.inp = { ms: Math.round(e.duration), event: e.name, target: sel(e.target), input_delay: Math.round(e.processingStart - e.startTime), processing: Math.round(e.processingEnd - e.processingStart), at: Math.round(e.startTime) };
+        }
+      },
+      { durationThreshold: 16 }
+    );
+    observe("longtask", (e) => {
+      const lt = perf.longTasks;
+      lt.count++;
+      lt.totalMs += Math.round(e.duration);
+      lt.worst.push({ at: Math.round(e.startTime), ms: Math.round(e.duration), from: e.attribution && e.attribution[0] ? e.attribution[0].containerSrc || e.attribution[0].name : undefined });
+      lt.worst.sort((a, b) => b.ms - a.ms);
+      lt.worst.length = Math.min(lt.worst.length, 8);
+    });
+    // Long animation frames name the scripts that blocked the page.
+    observe("long-animation-frame", (e) => {
+      if (e.duration < 100) return;
+      perf.loafs.push({
+        at: Math.round(e.startTime),
+        ms: Math.round(e.duration),
+        blocking_ms: Math.round(e.blockingDuration || 0),
+        scripts: (e.scripts || [])
+          .slice()
+          .sort((a, b) => b.duration - a.duration)
+          .slice(0, 3)
+          .map((x) => ({ ms: Math.round(x.duration), fn: x.sourceFunctionName || undefined, source: x.sourceURL ? x.sourceURL + (x.sourceCharPosition >= 0 ? ":" + x.sourceCharPosition : "") : undefined, invoker: x.invoker || undefined }))
+      });
+      perf.loafs.sort((a, b) => b.ms - a.ms);
+      perf.loafs.length = Math.min(perf.loafs.length, 12);
+    });
+    // JS heap every 10 s for 10 minutes (Chrome only): a leak shows as a steady climb.
+    const mem = performance.memory;
+    if (mem) {
+      const nativeClearInterval = window.clearInterval.bind(window);
+      let timer = 0;
+      const sample = () => {
+        perf.heap.push({ s: Math.round(performance.now() / 1000), mb: +(performance.memory.usedJSHeapSize / 1e6).toFixed(1) });
+        if (perf.heap.length >= 60 && timer) nativeClearInterval(timer);
+      };
+      sample();
+      timer = nativeSetInterval(sample, 10000);
+    }
+
+    // Workers the page starts (their own console and fetches run outside this hook;
+    // their requests still show under the tab's network).
+    for (const kind of ["Worker", "SharedWorker"]) {
+      const Native = window[kind];
+      if (typeof Native !== "function") continue;
+      try {
+        window[kind] = new Proxy(Native, {
+          construct(target, args, nt) {
+            const w = Reflect.construct(target, args, nt);
+            try {
+              const opts = args[1];
+              if (perf.workers.length < 50) perf.workers.push({ kind, url: absUrl(args[0] instanceof URL ? args[0].href : args[0]), name: typeof opts === "string" ? opts : opts && opts.name, module: !!(opts && opts.type === "module"), at: Math.round(performance.now()) });
+            } catch (_) {}
+            return w;
+          }
+        });
+      } catch (_) {}
+    }
+
+    // EventSource (server-sent events): each message is mirrored like a
+    // received WebSocket frame, so Traffic shows the stream.
+    const NativeES = window.EventSource;
+    if (typeof NativeES === "function") {
+      try {
+        window.EventSource = new Proxy(NativeES, {
+          construct(target, args, nt) {
+            const es = Reflect.construct(target, args, nt);
+            try {
+              const url = absUrl(args[0]);
+              const id = nextId("sse");
+              if (perf.sse.length < 50) perf.sse.push({ url, at: Math.round(performance.now()) });
+              post({ type: "ws-open", id, url, ts: Date.now() });
+              const onMsg = (ev) => {
+                try {
+                  post({ type: "ws-frame", id, url, dir: "received", ts: Date.now(), kind: "sse" + (ev.type && ev.type !== "message" ? ":" + ev.type : ""), ...clip(String(ev.data == null ? "" : ev.data)) });
+                } catch (_) {}
+              };
+              es.addEventListener("message", onMsg);
+              const origAdd = es.addEventListener;
+              const mirrored = new Set(["message", "open", "error"]);
+              // Named events ("event: price") only arrive to listeners for that name: mirror each name once.
+              es.addEventListener = function (type, fn, o) {
+                if (!mirrored.has(type)) {
+                  mirrored.add(type);
+                  origAdd.call(this, type, onMsg);
+                }
+                return origAdd.call(this, type, fn, o);
+              };
+              es.addEventListener("error", () => {
+                if (es.readyState === 2) post({ type: "ws-close", id, url, ts: Date.now(), code: 0, reason: "EventSource closed" });
+              });
+            } catch (_) {}
+            return es;
+          }
+        });
+      } catch (_) {}
+    }
   })();
 
 })();
