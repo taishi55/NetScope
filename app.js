@@ -366,11 +366,17 @@ function syncInspectTab() {
   const inside = !!INSPECT_VIEWS[currentView];
   tab.setAttribute("aria-selected", inside ? "true" : "false");
   $("inspectLabel").textContent = inside ? INSPECT_VIEWS[currentView] : "Inspect";
-  // Errors stay visible even when the Console is folded away.
+  // The count belongs to the open view; console errors show as a red dot
+  // everywhere else, so they are never hidden by the fold.
   const con = $("consoleCount");
-  const err = con && con.classList.contains("err") ? con.textContent : "";
-  $("inspectCount").textContent = err;
-  $("inspectCount").classList.toggle("err", !!err);
+  const errors = con && con.classList.contains("err") ? Number(con.textContent) || 0 : 0;
+  const own = currentView === "traffic" ? $("trafficCount").textContent : currentView === "console" ? (con ? con.textContent : "") : "";
+  const count = $("inspectCount");
+  count.textContent = own;
+  count.classList.toggle("err", currentView === "console" && errors > 0);
+  const dot = currentView !== "console" && errors > 0;
+  tab.classList.toggle("has-errors", dot);
+  tab.setAttribute("aria-label", `${inside ? INSPECT_VIEWS[currentView] : "Inspect"}${own ? ", " + own : ""}${errors ? `, ${errors} console error${errors === 1 ? "" : "s"}` : ""}`);
 }
 
 function setInspectMenu(open) {
@@ -460,16 +466,31 @@ function drawTrace(canvas, seconds) {
   ctx.lineTo(w, h - 2.5);
   ctx.stroke();
 
-  ctx.strokeStyle = cssVar("--signal");
-  ctx.lineWidth = 1.6;
+  // Quiet seconds stay on the grey baseline; only activity is drawn in signal
+  // amber, with a soft fill under it, so bursts read at a glance.
+  const signal = cssVar("--signal");
   ctx.lineJoin = "round";
-  ctx.beginPath();
-  counts.forEach((c, i) => {
-    const x = i * step;
-    if (i === 0) ctx.moveTo(x, y(c));
-    else ctx.lineTo(x, y(c));
-  });
-  ctx.stroke();
+  ctx.lineWidth = 1.6;
+  ctx.strokeStyle = signal;
+  ctx.fillStyle = signal;
+  for (let i = 0; i < counts.length; i++) {
+    if (!counts[i]) continue;
+    let j = i;
+    while (j < counts.length && counts[j]) j++;
+    const a = Math.max(0, i - 1);
+    const b = Math.min(counts.length - 1, j);
+    ctx.beginPath();
+    ctx.moveTo(a * step, y(counts[a]));
+    for (let k = a + 1; k <= b; k++) ctx.lineTo(k * step, y(counts[k]));
+    ctx.stroke();
+    ctx.lineTo(b * step, h - 2.5);
+    ctx.lineTo(a * step, h - 2.5);
+    ctx.closePath();
+    ctx.globalAlpha = 0.16;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    i = j;
+  }
 
   ctx.fillStyle = cssVar("--server-err");
   errs.forEach((c, i) => {
@@ -491,6 +512,7 @@ function updateCounts() {
   for (const e of entries) if (e.kind !== "nav") n++;
   ui.trafficCount.textContent = n ? String(n) : "";
   ui.pillCount.textContent = n ? String(n) : "";
+  syncInspectTab();
 }
 
 /* ------------------------------------------------------------ matcher */

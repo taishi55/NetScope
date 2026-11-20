@@ -339,7 +339,7 @@ globalThis.__netscopeMarkdown = (() => {
       m = HEADING.exec(line);
       if (m) {
         const level = m[1].length;
-        const h = el("h" + Math.min(6, level + 2), "md-h md-h" + level);
+        const h = el("h" + Math.min(6, Math.max(1, level + (opts.headingShift == null ? 2 : opts.headingShift))), "md-h md-h" + level);
         inline(h, m[2], leaf);
         parent.appendChild(h);
         i++;

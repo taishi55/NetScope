@@ -40,20 +40,24 @@ window.__netscopeConsoleUi = (() => {
   const ask = (text) => window.__netscopeAi && window.__netscopeAi.prefill(text, true);
 
   // "https://x.com/static/js/main.3f2a.js:120:15" → "main.3f2a.js:120";
-  // an inline script on "https://x.com/" → "x.com/:15".
-  function shortSource(src) {
+  // an inline script on "https://x.com/" → "inline:15".
+  // docs: origin + path of the page's own documents (navigations and route
+  // changes), so an inline script on "/orders/12" also reads as inline.
+  function shortSource(src, docs) {
     const m = /^(.*?):(\d+)(?::\d+)?$/.exec(src || "");
     const url = (m ? m[1] : src || "").split(/[?#]/)[0];
-    let file = url.split("/").pop();
-    if (!file && url) {
-      try {
-        const u = new URL(url);
-        file = u.host + u.pathname;
-      } catch (_) {
-        file = url;
-      }
+    const line = m ? ":" + m[2] : "";
+    const file = url.split("/").pop();
+    if (/\.[a-z0-9]{1,5}$/i.test(file)) return file + line;
+    if (!url) return "";
+    // No file name: the site root is a script inline in the page itself;
+    // any other path (an extensionless script such as /gtag/js) keeps its host.
+    try {
+      const u = new URL(url);
+      return u.pathname === "/" || (docs && docs.has(u.origin + u.pathname)) ? "inline" + line : u.host + u.pathname + line;
+    } catch (_) {
+      return url + line;
     }
-    return file ? file + (m ? ":" + m[2] : "") : "";
   }
 
   function when(ts) {
@@ -143,6 +147,15 @@ window.__netscopeConsoleUi = (() => {
     list.hidden = !logs.length;
     $("conStats").textContent = logs.length ? `${shown.length === logs.length ? logs.length : shown.reduce((n, r) => n + r.n, 0) + " of " + logs.length} messages` : "";
     $("conAsk").disabled = !c.error && !c.warn;
+    const docs = new Set();
+    const addDoc = (url) => {
+      try {
+        const u = new URL(url);
+        docs.add(u.origin + u.pathname);
+      } catch (_) {}
+    };
+    for (const e of api.getEntries ? api.getEntries() : []) if (e.kind === "nav") addDoc(e.url);
+    for (const l of logs) if (l.level === "route") addDoc(l.text);
     const atBottom = stick;
     const frag = document.createDocumentFragment();
     for (const { l, n } of shown) {
@@ -160,7 +173,7 @@ window.__netscopeConsoleUi = (() => {
       msg.appendChild(document.createTextNode(l.level === "route" ? routeText(l.text) : l.text.split("\n")[0].slice(0, 400)));
       row.appendChild(msg);
       if (n > 1) row.appendChild(node("span", "con-rep", "×" + n));
-      const src = node("span", "con-src", l.level === "route" ? "" : shortSource(l.source));
+      const src = node("span", "con-src", l.level === "route" ? "" : shortSource(l.source, docs));
       if (l.source) src.title = l.source;
       row.appendChild(src);
       row.appendChild(node("span", "con-t", when(l.ts)));

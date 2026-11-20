@@ -2736,3 +2736,265 @@ body:not(.mode-large):not(.standalone) #appSelectWrap {
 .app-md .msg-body th {
   white-space: nowrap;
 }
+
+/* ======================================================= design pass */
+
+/* Readout: one instrument panel split by hairlines, not a grid of cards. */
+.readout {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  overflow: hidden;
+  margin: 0 0 14px;
+  max-width: 100ch;
+}
+
+.ro-cell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: flex-start;
+  text-align: left;
+  min-width: 0;
+  padding: 10px 12px 11px 14px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: inset -1px 0 0 var(--line), inset 0 -1px 0 var(--line);
+  font: inherit;
+  color: inherit;
+}
+
+button.ro-cell {
+  cursor: pointer;
+}
+
+button.ro-cell:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+
+button.ro-cell:focus-visible {
+  outline-offset: -3px;
+}
+
+/* The tick: a 3px bar on the cell's left edge, only when it carries news. */
+.ro-cell.ro-bad::before,
+.ro-cell.ro-good::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 10px;
+  bottom: 10px;
+  width: 3px;
+  border-radius: 0 2px 2px 0;
+  background: var(--server-err);
+}
+
+.ro-cell.ro-good::before {
+  background: var(--ok);
+}
+
+.ro-label {
+  font-size: 11.5px;
+  color: var(--ink-3);
+  font-weight: 560;
+}
+
+.ro-value {
+  font-size: 17px;
+  line-height: 1.25;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ro-bad .ro-value {
+  color: var(--server-err);
+}
+
+.ro-detail {
+  font-size: 12px;
+  color: var(--ink-2);
+  line-height: 1.35;
+  max-width: 100%;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+/* Data tables in App panels: the same grammar as Traffic's list. */
+.dt-wrap {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  overflow: auto;
+  margin: 0 0 14px;
+  max-width: 100ch;
+}
+
+.dt {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 12px;
+}
+
+.dt th {
+  position: sticky;
+  top: 0;
+  background: var(--surface-2);
+  text-align: left;
+  font-weight: 560;
+  color: var(--ink-3);
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.dt td {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+  vertical-align: top;
+}
+
+.dt tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.dt tbody tr:hover td {
+  background: var(--surface-2);
+}
+
+.dt tr.bad td {
+  background: color-mix(in srgb, var(--server-err) 6%, transparent);
+}
+
+.dt .num {
+  text-align: right;
+}
+
+.dt .dim {
+  color: var(--ink-2);
+}
+
+.dt .strong {
+  font-weight: 600;
+}
+
+.dt td.c-s {
+  font-weight: 600;
+}
+
+.dt .c-type {
+  width: 86px;
+}
+
+.dt th.c-s,
+.dt td.c-s {
+  width: 54px;
+}
+
+.dt .c-sz {
+  width: 62px;
+}
+
+.dt .c-tm {
+  width: 60px;
+}
+
+.app-summary {
+  margin: 0 0 8px;
+}
+
+/* App bar: one row; chips wrap, the actions stay right. */
+.pane-bar .app-bar {
+  flex-wrap: nowrap;
+  align-items: flex-start;
+}
+
+.app-bar #appTabs {
+  flex: 1;
+  min-width: 0;
+}
+
+.app-bar #appRefresh {
+  flex: none;
+}
+
+.app-bar #appAsk {
+  flex: none;
+  font-size: 12px;
+  padding: 3px 10px;
+}
+
+body:not(.mode-large):not(.standalone) .app-bar {
+  align-items: center;
+}
+
+/* Target size: 24px minimum for every chip (WCAG 2.2, 2.5.8). */
+#conLevels .tgl,
+#appTabs .tgl,
+.app-chips .tgl,
+#scopes .tgl {
+  min-height: 24px;
+}
+
+/* The folded Inspect tab: a red dot when the console has errors. */
+#tab-inspect.has-errors #inspectLabel {
+  position: relative;
+  padding-right: 10px;
+}
+
+#tab-inspect.has-errors #inspectLabel::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  top: 1px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--server-err);
+}
+
+/* Settings: sections separated by a rule; inputs use the full width. */
+.sheet-body h4 {
+  margin: 14px 0 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  font-size: 12.5px;
+}
+
+.sheet-body > :first-child h4,
+.sheet-body > h4:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.sheet-body input[type="password"],
+.sheet-body input[type="text"],
+.sheet-body input[type="number"] {
+  width: 100%;
+}
+
+/* Chat start: suggestions read as one list of questions. */
+.suggest button {
+  color: var(--ink);
+  border-color: var(--line);
+}
+
+.suggest button:disabled {
+  opacity: 0.55;
+}

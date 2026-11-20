@@ -464,7 +464,7 @@ window.__netscopeFlowsUi = (() => {
         node(
           "p",
           "hint",
-          `Ask ${aiName()} something like “whenever this page loads orders, post each new paid one to my webhook” or “every hour, page through all users and flag the inactive ones”. It builds the flow from requests this page already made, runs it once, then schedules it. Or start from New flow, which opens a small example bot.`
+          `Describe one to ${aiName()} — for example “every hour, list new orders and post each paid one to my webhook”. It builds the flow from requests this page already made, runs it once, then schedules it. Or start from New flow.`
         )
       );
       list.appendChild(empty);

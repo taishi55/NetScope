@@ -84,7 +84,8 @@ window.__netscopeAppUi = (() => {
     const wrap = node("div", "msg-assistant app-md");
     const body = node("div", "msg-body");
     if (window.__netscopeMarkdown) {
-      window.__netscopeMarkdown.render(body, text, { copy: (t, msg) => typeof copyText === "function" && copyText(t, msg) });
+      // headingShift 0: "###" is h3 here (the view has no h1/h2 of its own above it).
+      window.__netscopeMarkdown.render(body, text, { headingShift: 0, copy: (t, msg) => typeof copyText === "function" && copyText(t, msg) });
     } else body.appendChild(node("pre", "", text));
     wrap.appendChild(body);
     target.appendChild(wrap);
@@ -114,7 +115,7 @@ window.__netscopeAppUi = (() => {
     let data = cache.get(key);
     if (!data) {
       body.replaceChildren(node("div", "pane-loading", "Reading the page…"));
-      $("appStats").textContent = "";
+      $("appStats").textContent = "Reading the page";
       try {
         data = await load();
       } catch (err) {
@@ -130,7 +131,8 @@ window.__netscopeAppUi = (() => {
       cache.set(key, data);
     }
     body.replaceChildren();
-    $("appStats").textContent = data && data.ms != null ? `read in ${data.ms} ms` : "";
+    $("appStats").textContent = "";
+    $("appRefresh").title = data && data.ms != null ? `Read the page again (last read took ${data.ms} ms)` : "Read the page again";
     try {
       RENDER[panel](body, data);
     } catch (err) {
@@ -144,8 +146,10 @@ window.__netscopeAppUi = (() => {
 
   async function load() {
     switch (panel) {
-      case "overview":
-        return call("overview");
+      case "overview": {
+        const [page, res] = await Promise.all([call("overview"), api.rpc("res.list", { limit: 1 }).catch(() => null)]);
+        return { page, res, ms: page.ms };
+      }
       case "routes":
         return call("routes");
       case "components":
@@ -194,6 +198,63 @@ window.__netscopeAppUi = (() => {
 
   /* ------------------------------------------------------------ panels */
 
+  const plural = (n, one, many) => `${n} ${n === 1 ? one : many || one + "s"}`;
+
+  // An instrument-style strip: one panel split into cells, each a label, a
+  // value and one line of detail. A cell with go() is a button to its section;
+  // tone "bad" adds a red tick, "good" a green one.
+  function readout(parent, cells) {
+    const strip = node("div", "readout");
+    for (const c of cells) {
+      const el = c.go ? node("button", "ro-cell") : node("div", "ro-cell");
+      if (c.go) {
+        el.type = "button";
+        el.addEventListener("click", c.go);
+      }
+      if (c.tone) el.classList.add("ro-" + c.tone);
+      el.appendChild(node("span", "ro-label", c.label));
+      el.appendChild(node("span", "ro-value", c.value));
+      if (c.detail) el.appendChild(node("span", "ro-detail", c.detail));
+      strip.appendChild(el);
+    }
+    parent.appendChild(strip);
+    return strip;
+  }
+
+  // A compact data table like Traffic's list. cols: [label, class]; rows:
+  // { cells: [[text | [main, sub], class, title]], cls, title }.
+  function table(cols, rows) {
+    const wrap = node("div", "dt-wrap");
+    const t = node("table", "dt");
+    const thead = node("thead");
+    const htr = node("tr");
+    for (const [label, cls] of cols) {
+      const th = node("th", cls, label);
+      th.scope = "col";
+      htr.appendChild(th);
+    }
+    thead.appendChild(htr);
+    t.appendChild(thead);
+    const tbody = node("tbody");
+    for (const r of rows) {
+      const tr = node("tr", r.cls || "");
+      if (r.title) tr.title = r.title;
+      r.cells.forEach(([text, cls, title], i) => {
+        const td = node("td", [cols[i][1], cls].filter(Boolean).join(" "));
+        if (Array.isArray(text)) {
+          td.appendChild(document.createTextNode(String(text[0])));
+          if (text[1]) td.appendChild(node("span", "name-sub", " " + text[1]));
+        } else td.textContent = String(text);
+        if (title) td.title = title;
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    }
+    t.appendChild(tbody);
+    wrap.appendChild(t);
+    return wrap;
+  }
+
   function controls(parent, items) {
     const bar = node("div", "app-controls");
     for (const it of items) bar.appendChild(it);
@@ -227,15 +288,67 @@ window.__netscopeAppUi = (() => {
   }
 
   const RENDER = {
-    overview(body, o) {
-      const out = [];
+    overview(body, d) {
+      const o = d.page;
+      const logs = api.getLogs();
+      const res = d.res || {};
+      // A failed image/script load is both a console error and a failed request: count it once.
+      const errors = logs.filter((l) => l.level === "error" && !(l.kind === "resource" && res.total)).length;
+      const warnings = logs.filter((l) => l.level === "warn").length;
+      const failed = res.failed || 0;
       const fw = o.frameworks || [];
-      out.push("### Stack");
-      if (fw.length) {
-        out.push("| Technology | Version | Notes |", "| --- | --- | --- |");
-        for (const f of fw) out.push(`| **${esc(f.name)}** | ${esc(f.version || "")} | ${esc(f.note || "")} |`);
-      } else out.push("No framework detected — likely server-rendered HTML, or a framework NetScope does not recognise yet.");
+      const st = o.storage || {};
+      const keys = ((st.localStorage && st.localStorage.count) || 0) + ((st.sessionStorage && st.sessionStorage.count) || 0);
+      const idb = Array.isArray(st.indexedDB) ? st.indexedDB : [];
+      const apiCalls = api.getEntries().filter((e) => e.kind === "http").length;
+      const hosts = new Set();
+      for (const e of api.getEntries()) {
+        try {
+          if (e.url) hosts.add(new URL(e.url).host);
+        } catch (_) {}
+      }
+      readout(body, [
+        {
+          label: "Health",
+          value: errors + failed ? plural(errors + failed, "problem") : "No errors",
+          detail: [errors ? plural(errors, "console error") : "", failed ? plural(failed, "failed request") : "", warnings ? plural(warnings, "warning") : ""].filter(Boolean).join(", ") || "Console and network are clean",
+          tone: errors + failed ? "bad" : "good",
+          go: errors ? () => switchView("console") : failed ? () => ((netType = "failed"), (panel = "network"), show()) : null
+        },
+        {
+          label: "Stack",
+          value: fw.length ? fw[0].name + (fw[0].version ? " " + fw[0].version.split(/[ +]/)[0] : "") : "No framework",
+          detail: fw.length > 1 ? fw.slice(1, 4).map((f) => f.name).join(", ") : fw.length ? fw[0].note || "" : "Server-rendered or unrecognised",
+          go: () => ((panel = "components"), show())
+        },
+        {
+          label: "Data",
+          value: plural(keys, "storage key"),
+          detail:
+            [
+              st.localStorage && st.localStorage.count ? `${st.localStorage.count} local` : "",
+              st.sessionStorage && st.sessionStorage.count ? `${st.sessionStorage.count} session` : "",
+              idb.length ? plural(idb.length, "database") : "",
+              (st.cookies_visible_to_js || []).length ? plural(st.cookies_visible_to_js.length, "readable cookie") : "",
+              (st.serviceWorkers || []).length ? "service worker" : ""
+            ]
+              .filter(Boolean)
+              .join(", ") || "Nothing stored",
+          go: () => ((panel = "storage"), show())
+        },
+        {
+          label: "Network",
+          value: res.total ? plural(res.total, "request") : plural(apiCalls, "API call"),
+          detail: [res.total ? plural(apiCalls, "API call") : "", plural(hosts.size, "host"), (o.hosts && o.hosts.third_party || []).length ? plural(o.hosts.third_party.length, "third party", "third parties") : ""].filter(Boolean).join(", "),
+          go: () => ((panel = "network"), show())
+        }
+      ]);
+      const out = [];
       const b = o.build || {};
+      if (fw.length) {
+        out.push("### Stack", "| Technology | Version | Notes |", "| --- | --- | --- |");
+        for (const f of fw) out.push(`| **${esc(f.name)}** | ${esc(f.version || "")} | ${esc(f.note || "")} |`);
+      }
       if (b.next) out.push("", `**Next.js** page \`${code(b.next.page)}\`, build \`${code(b.next.buildId)}\`${b.next.data_fetching && b.next.data_fetching.length ? ", data fetching: " + esc(b.next.data_fetching.join(", ")) : ""}`);
       if (b.remix) out.push("", `**Route manifest**: ${b.remix.routes} routes (version ${esc(b.remix.version || "?")})`);
       if (b.sveltekit) out.push("", "**SvelteKit**: " + b.sveltekit.map((k) => "`" + code(JSON.stringify(k.value)) + "`").join(" "));
@@ -244,27 +357,9 @@ window.__netscopeAppUi = (() => {
         out.push("", "### Services");
         for (const s of o.services) out.push(`- **${esc(s.name)}**${s.detail ? " — " + esc(s.detail) : ""}`);
       }
-      const st = o.storage || {};
-      out.push("", "### Storage", "| Where | What |", "| --- | --- |");
-      const area = (a) => (a && !a.error ? `${a.count} keys, ${kb(a.chars)}` : a ? esc(a.error) : "—");
-      out.push(`| localStorage | ${area(st.localStorage)} |`, `| sessionStorage | ${area(st.sessionStorage)} |`);
-      out.push(`| Cookies readable by scripts | ${esc((st.cookies_visible_to_js || []).join(", ") || "none")} |`);
-      out.push(`| IndexedDB | ${esc(Array.isArray(st.indexedDB) ? st.indexedDB.join(", ") || "none" : st.indexedDB)} |`);
-      out.push(`| Cache Storage | ${esc((st.cacheStorage || []).join(", ") || "none")} |`);
-      out.push(`| Service workers | ${esc((st.serviceWorkers || []).map((w) => w.scope + " (" + w.state + ")").join(", ") || "none")} |`);
-      const p = o.performance || {};
-      if (p.navigation) {
-        const n = p.navigation;
-        out.push("", "### Performance", "| Metric | Value |", "| --- | ---: |");
-        out.push(`| Time to first byte | ${n.ttfb_ms} ms |`, `| DOMContentLoaded | ${n.dom_content_loaded_ms} ms |`, `| Load | ${n.load_ms} ms |`, `| Protocol | ${esc(n.protocol || "—")} |`);
-        if (p.js_heap_mb) out.push(`| JS heap | ${p.js_heap_mb} MB |`);
-        if ((n.server_timing || []).length) out.push(`| Server-Timing | ${esc(n.server_timing.join(", "))} |`);
-        if ((p.slowest || []).length) out.push("", "Slowest resources:", fence(p.slowest.join("\n")));
-      }
-      const d = o.dom || {};
-      out.push("", "### Page", `${d.elements} elements, ${d.forms} forms, ${d.inputs} inputs, ${d.buttons} buttons, ${d.links_internal} internal and ${d.links_external} external links, ${d.images} images.`);
-      if ((d.custom_elements || []).length) out.push("", "Custom elements: " + esc(d.custom_elements.join(", ")));
-      if ((d.iframes || []).length) out.push("", "Iframes: " + esc(d.iframes.join(", ")));
+      const dom = o.dom || {};
+      out.push("", "### Page", `${plural(dom.elements, "element")}, ${plural(dom.forms, "form")}, ${plural(dom.inputs, "input")}, ${plural(dom.buttons, "button")}, ${dom.links_internal} internal and ${plural(dom.links_external, "external link")}, ${plural(dom.images, "image")}.`);
+      if ((dom.custom_elements || []).length) out.push("", "Custom elements: " + esc(dom.custom_elements.join(", ")));
       const h = o.hosts || {};
       if ((h.third_party || []).length) out.push("", "### Hosts", "First-party: " + esc((h.first_party || []).join(", ") || "—"), "", "Third-party: " + esc(h.third_party.join(", ")));
       if ((o.inline_data || []).length) {
@@ -273,8 +368,7 @@ window.__netscopeAppUi = (() => {
       }
       const g = o.app_globals || {};
       if ((g.sample || []).length) out.push("", `### App globals (${g.count})`, fence(g.sample.join("\n")));
-      const m = o.meta || {};
-      out.push("", "### Meta", fence(JSON.stringify(m, null, 2), "json"));
+      out.push("", "### Meta", fence(JSON.stringify(o.meta || {}, null, 2), "json"));
       md(body, out.join("\n"));
     },
 
@@ -492,9 +586,8 @@ window.__netscopeAppUi = (() => {
           "Request type"
         )
       );
-      const out = [];
       if (!r.total) {
-        out.push(r.recording ? "Nothing recorded yet. **Reload the page** to record its document, scripts, styles and every other request with status and headers." : "Not recording this tab yet.");
+        const out = [r.recording ? "Nothing recorded yet. **Reload the page** to record its document, scripts, styles and every other request with status and headers." : "Not recording this tab yet."];
         const rt = r.timing && r.timing.resources;
         if (rt && rt.length) {
           out.push("", `### Loaded so far (Resource Timing, ${r.timing.count})`, "| Type | Resource | Time | Size |", "| --- | --- | ---: | ---: |");
@@ -502,15 +595,41 @@ window.__netscopeAppUi = (() => {
         }
         return md(body, out.join("\n"));
       }
-      const bt = r.by_type || {};
-      out.push(`${r.total} requests recorded${r.failed ? `, **${r.failed} failed**` : ""}: ` + Object.entries(bt).map(([k, v]) => `${esc(k.replace("_", " "))} ${v.count}`).join(", "));
-      out.push("", "| | Status | Type | Request | Time | Size |", "| --- | --- | --- | --- | ---: | ---: |");
-      for (const q of r.requests) {
-        const status = q.error ? "✕ " + esc(q.error.replace(/^net::/, "")) : q.status ? String(q.status) + (q.cache ? " (cache)" : "") : "—";
-        out.push(`| ${esc(q.method)} | ${status} | ${esc(q.type.replace("_", " "))}${q.worker ? " (worker)" : ""} | \`${code(q.url.replace(/^https?:\/\//, "").slice(0, 140))}\`${q.redirect_to ? " → \`" + code(q.redirect_to.slice(0, 80)) + "\`" : ""} | ${q.ms != null ? q.ms + " ms" : ""} | ${q.kb != null ? q.kb + " kB" : ""} |`);
-      }
-      if (r.matched > r.requests.length) out.push("", `Showing ${r.requests.length} of ${r.matched}.`);
-      md(body, out.join("\n"));
+      const TYPE = { main_frame: "Document", sub_frame: "Frame", xmlhttprequest: "Fetch/XHR", stylesheet: "Style", script: "Script", image: "Image", font: "Font", media: "Media", ping: "Beacon", websocket: "WebSocket", other: "Other" };
+      body.appendChild(node("p", "pane-stats app-summary", `${r.total} requests${r.failed ? `, ${r.failed} failed` : ""}` + (r.matched !== r.total ? `, ${r.matched} shown` : "")));
+      body.appendChild(
+        table(
+          [
+            ["Status", "c-s"],
+            ["Name", ""],
+            ["Type", "c-type"],
+            ["Size", "c-sz num"],
+            ["Time", "c-tm num"]
+          ],
+          r.requests.map((q) => {
+            let path = q.url;
+            let host = "";
+            try {
+              const u = new URL(q.url);
+              path = (u.pathname.split("/").filter(Boolean).pop() || u.pathname) + u.search;
+              host = u.host;
+            } catch (_) {}
+            const bad = q.error || q.status >= 400;
+            return {
+              cls: bad ? "bad" : "",
+              title: q.url,
+              cells: [
+                [q.error ? "✕" : q.status || "—", q.error ? "sx" : statusClass(q.status || 0), q.error || (q.cache ? "from cache" : "")],
+                [[path || "/", host + (q.method !== "GET" ? "  " + q.method : "") + (q.worker ? "  worker" : "") + (q.redirect_to ? "  → " + q.redirect_to : "")], "name"],
+                [TYPE[q.type] || q.type, "dim"],
+                [q.kb != null ? q.kb + " kB" : "", "num"],
+                [q.ms != null ? q.ms + " ms" : "", "num"]
+              ]
+            };
+          })
+        )
+      );
+      if (r.matched > r.requests.length) body.appendChild(node("p", "pane-stats", `Showing ${r.requests.length} of ${r.matched}.`));
     },
 
     security(body, s) {
@@ -583,33 +702,61 @@ window.__netscopeAppUi = (() => {
     },
 
     accessibility(body, a) {
-      const out = [`**${a.issues_count} issues** · contrast: ${a.contrast.below_aa} of ${a.contrast.text_elements_checked} text elements below WCAG AA · lang: ${esc(a.lang || "missing")}`];
-      if ((a.issues || []).length) out.push("", "### Issues", fence(a.issues.join("\n")));
-      out.push("", "### Landmarks", esc((a.landmarks || []).join(", ") || "none"));
-      out.push("", "### Heading outline", fence((a.heading_outline || []).join("\n") || "(no headings)"));
-      out.push("", "### Controls and their names", fence((a.controls || []).join("\n")));
-      out.push("", esc(a.note));
+      // Group issues by kind: "image without alt: img — url" → kind "image without alt".
+      // Page-level issues ("page: no <main> landmark") are each their own kind.
+      const groups = new Map();
+      for (const i of a.issues || []) {
+        const at = i.indexOf(": ");
+        let k = at > 0 ? i.slice(0, at) : i;
+        let rest = at > 0 ? i.slice(at + 2) : "";
+        if (k === "page") (k = rest), (rest = "");
+        else if (k.startsWith("duplicate id ")) (rest = k.slice(13)), (k = "duplicate id");
+        if (!groups.has(k)) groups.set(k, []);
+        groups.get(k).push(rest);
+      }
+      readout(body, [
+        { label: "Issues", value: String(a.issues_count), detail: groups.size ? plural(groups.size, "kind") : "None found", tone: a.issues_count ? "bad" : "good" },
+        { label: "Contrast", value: a.contrast.below_aa ? `${a.contrast.below_aa} failing` : "Passes AA", detail: `${a.contrast.text_elements_checked} text elements checked`, tone: a.contrast.below_aa ? "bad" : "good" },
+        { label: "Landmarks", value: String((a.landmarks || []).length), detail: (a.landmarks || []).slice(0, 4).join(", ") || "None", tone: (a.landmarks || []).length ? "" : "bad" },
+        { label: "Headings", value: String((a.heading_outline || []).length), detail: a.lang ? "lang " + a.lang : "No lang attribute", tone: a.lang ? "" : "bad" }
+      ]);
+      if (groups.size) {
+        body.appendChild(
+          table(
+            [
+              ["Issue", ""],
+              ["Count", "c-s num"],
+              ["Example", ""]
+            ],
+            Array.from(groups.entries()).map(([k, list]) => ({ cells: [[k[0].toUpperCase() + k.slice(1), "strong"], [String(list.length), "num"], [list[0] || "", "dim"]] }))
+          )
+        );
+      }
+      const out = ["### Heading outline", fence((a.heading_outline || []).join("\n") || "(no headings)"), "", "### Controls and their names", fence((a.controls || []).join("\n")), "", esc(a.note)];
       md(body, out.join("\n"));
     },
 
     performance(body, p) {
       const v = p.web_vitals || {};
+      if (p.note) body.appendChild(node("p", "pane-stats app-summary", p.note));
+      const tone = (r) => (r === "good" ? "good" : r ? "bad" : "");
+      const cell = (label, m, detail, fmt) => (m ? { label, value: fmt(m), detail: (m.rating ? m.rating[0].toUpperCase() + m.rating.slice(1) : "") + (detail ? " — " + detail : ""), tone: tone(m.rating) } : { label, value: "—", detail: "Not measured" });
+      readout(body, [
+        cell("LCP", v.LCP, v.LCP && v.LCP.element, (m) => m.ms + " ms"),
+        cell("CLS", v.CLS, "", (m) => String(m.value)),
+        v.INP && v.INP.ms != null ? cell("INP", v.INP, `${v.INP.event} on ${v.INP.target}`, (m) => m.ms + " ms") : { label: "INP", value: "—", detail: v.INP ? v.INP.note : "Not measured" },
+        cell("FCP", v.FCP, "", (m) => m.ms + " ms"),
+        cell("TTFB", v.TTFB, "", (m) => m.ms + " ms")
+      ]);
       const out = [];
-      if (p.note) out.push(esc(p.note), "");
-      out.push("| Metric | Value | Rating | Detail |", "| --- | ---: | --- | --- |");
-      const row = (name, val, rating, detail) => out.push(`| ${name} | ${val} | ${rating ? (rating === "good" ? "good" : "**" + esc(rating) + "**") : ""} | ${esc(detail || "")} |`);
-      if (v.LCP) row("LCP", v.LCP.ms + " ms", v.LCP.rating, v.LCP.element + (v.LCP.url ? " " + v.LCP.url.slice(0, 60) : ""));
-      if (v.CLS) row("CLS", v.CLS.value, v.CLS.rating, "");
-      if (v.INP && v.INP.ms != null) row("INP", v.INP.ms + " ms", v.INP.rating, `${v.INP.event} on ${v.INP.target} (input delay ${v.INP.input_delay} ms, processing ${v.INP.processing} ms)`);
-      else if (v.INP) row("INP", "—", "", v.INP.note);
-      if (v.FCP) row("FCP", v.FCP.ms + " ms", v.FCP.rating, "");
-      if (v.TTFB) row("TTFB", v.TTFB.ms + " ms", v.TTFB.rating, "");
-      if ((p.layout_shifts || []).length) out.push("", "### Layout shifts", fence(p.layout_shifts.map((s) => `${s.ms} ms  ${s.value}  ${s.moved.join(", ")}`).join("\n")));
+      if ((p.layout_shifts || []).length) out.push("### Layout shifts", fence(p.layout_shifts.map((s) => `${s.ms} ms  ${s.value}  ${s.moved.join(", ")}`).join("\n")));
       const lt = p.long_tasks;
       if (lt && lt.count) out.push("", `### Long tasks: ${lt.count}, ${lt.totalMs} ms in total`, fence(lt.worst.map((t) => `${t.ms} ms at ${t.at} ms${t.from ? "  " + t.from : ""}`).join("\n")));
       if ((p.long_animation_frames || []).length) out.push("", "### Slow frames and the scripts behind them", fence(p.long_animation_frames.map((f) => `${f.ms} ms (blocking ${f.blocking_ms}) at ${f.at} ms\n` + f.scripts.map((s) => `   ${s.ms} ms ${s.fn || "(anonymous)"} ${s.source || ""} ${s.invoker || ""}`).join("\n")).join("\n")));
       if ((p.js_heap_mb_over_time || []).length > 1) out.push("", "### JS heap", fence(p.js_heap_mb_over_time.map((h) => `${h.s} s  ${h.mb} MB`).join("\n")));
-      md(body, out.join("\n"));
+      const n = (p.timings || {}).navigation;
+      if (n) out.push("", "### Page load", `Time to first byte ${n.ttfb_ms} ms, DOMContentLoaded ${n.dom_content_loaded_ms} ms, load ${n.load_ms} ms over ${esc(n.protocol || "?")}.`);
+      if (out.length) md(body, out.join("\n"));
     },
 
     frames(body, f) {

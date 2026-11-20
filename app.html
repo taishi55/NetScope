@@ -28,6 +28,9 @@
       <symbol id="i-close" viewBox="0 0 24 24">
         <path d="M6 6l12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
       </symbol>
+      <symbol id="i-refresh" viewBox="0 0 24 24">
+        <path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3M19.5 4.5v4h-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+      </symbol>
       <symbol id="i-chev" viewBox="0 0 24 24">
         <path d="M7 10l5 5 5-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
       </symbol>
@@ -80,9 +83,9 @@
           <svg aria-hidden="true"><use href="#i-chev" /></svg>
         </button>
         <div id="inspectMenu" role="menu" aria-label="Inspect" hidden>
-          <button role="menuitem" type="button" data-view="traffic"><span class="mi-name">Traffic</span><span class="mi-note">Requests and responses</span><span class="count" data-count="trafficCount"></span></button>
+          <button role="menuitem" type="button" data-view="traffic"><span class="mi-name">Traffic</span><span class="mi-note">API requests and responses</span><span class="count" data-count="trafficCount"></span></button>
           <button role="menuitem" type="button" data-view="console"><span class="mi-name">Console</span><span class="mi-note">Logs, errors and route changes</span><span class="count" data-count="consoleCount"></span></button>
-          <button role="menuitem" type="button" data-view="app"><span class="mi-name">App</span><span class="mi-note">Stack, routes, state, storage, code, design</span><span class="count"></span></button>
+          <button role="menuitem" type="button" data-view="app"><span class="mi-name">App</span><span class="mi-note">Stack, data, code, network and UX</span><span class="count"></span></button>
         </div>
         <button role="tab" id="tab-traffic" data-view="traffic" aria-selected="false" aria-controls="view-traffic">
           Traffic <span class="count" id="trafficCount"></span>
@@ -110,16 +113,16 @@
         <section id="view-chat" class="view on" role="tabpanel" aria-labelledby="tab-chat">
           <div id="aiLog" role="log" aria-live="polite">
             <div id="aiEmpty">
-              <h2>Ask about this page's API</h2>
-              <p><span class="ai-name">Kimi</span> reads the requests this page makes, calls endpoints for you, and turns a sequence of calls into a flow that can run on a schedule.</p>
+              <h2>Ask about this page</h2>
+              <p><span class="ai-name">Kimi</span> reads its requests, console, code and interface, calls endpoints for you, and can turn a run of calls into a scheduled flow.</p>
               <div id="aiConnect" class="connect" hidden>
                 <p id="aiConnectText">Add your Kimi API key to start. Traffic, Edit &amp; send and Flows work without it.</p>
                 <button id="aiConnectBtn" class="primary" type="button">Connect Kimi</button>
               </div>
               <div id="aiSuggest" class="suggest">
-                <button type="button" data-prompt="summarize">Map the API this page uses</button>
+                <button type="button" data-prompt="Map this app: its stack, routes, main components, state and storage, the API endpoints and how the frontend calls them, and what the server must be doing (mark what you infer).">Map this app</button>
                 <button type="button" data-prompt="Find the most recent failed request and tell me why it failed.">Why did the last request fail?</button>
-                <button type="button" data-prompt="Pick the most useful JSON endpoint this page called, call it again yourself, and show me what changed.">Call an endpoint again</button>
+                <button type="button" data-prompt="Explain the console errors and warnings on this page: group them by cause, say which matter for users, and point to the code and requests involved.">Explain the console errors</button>
                 <button type="button" data-prompt="Build a flow from this page's traffic: call the main list endpoint, take the first item's id from the response, then fetch that item's detail. Run it once, then schedule it every hour.">Automate a two-step flow</button>
               </div>
             </div>
@@ -128,7 +131,7 @@
           <form id="aiComposer" autocomplete="off">
             <div id="aiContext" hidden>
               <span class="ctx-label">About</span>
-              <button type="button" id="aiContextOpen" class="ctx-chip"></button>
+              <button type="button" id="aiContextOpen" class="ctx-chip" aria-label="Show the selected request"></button>
               <button type="button" id="aiContextClear" class="icon small" title="Don't include this request" aria-label="Don't include this request">
                 <svg><use href="#i-close" /></svg>
               </button>
@@ -248,15 +251,12 @@
         <!-- ============================================================= App -->
         <section id="view-app" class="view" role="tabpanel" aria-labelledby="tab-app">
           <div class="pane-bar">
-            <div class="row">
-              <div id="appTabs" role="tablist" aria-label="Inspect"></div>
+            <div class="row app-bar">
+              <div id="appTabs" role="tablist" aria-label="App sections"></div>
               <label id="appSelectWrap"><span class="sr-only">Section</span><select id="appSelect" aria-label="App section"></select></label>
-            </div>
-            <div class="row sub">
-              <span id="appStats" class="pane-stats"></span>
-              <span class="spacer"></span>
-              <button id="appRefresh" type="button" class="ghost">Refresh</button>
-              <button id="appAsk" type="button" class="primary">Ask <span class="ai-name">Kimi</span> to map this app</button>
+              <span id="appStats" class="sr-only" aria-live="polite"></span>
+              <button id="appRefresh" type="button" class="icon" title="Read the page again" aria-label="Read the page again"><svg aria-hidden="true"><use href="#i-refresh" /></svg></button>
+              <button id="appAsk" type="button" class="primary" title="Ask the AI to write up the stack, routes, state, API and backend as a doc">Map this app</button>
             </div>
           </div>
           <div id="appBody"></div>
@@ -265,7 +265,7 @@
         <!-- =========================================================== Flows -->
         <section id="view-flows" class="view" role="tabpanel" aria-labelledby="tab-flows">
           <div id="flowsHead">
-            <p>Automate API work: chain calls, filter and loop over results, branch, and remember what was already handled. Run a flow now, on a schedule, or whenever this page makes a matching request — they keep working while Chrome is open, even with this page closed.</p>
+            <p>Chain API calls, filter and loop over the results, and run them on a schedule or whenever this page makes a matching request. Flows keep running while Chrome is open.</p>
             <div class="actions">
               <button id="flowAsk" class="primary" type="button">Build with <span class="ai-name">Kimi</span></button>
               <button id="flowNew" type="button">New flow</button>
@@ -318,6 +318,7 @@
             </div>
           </div>
 
+          <h4>How it works</h4>
           <label class="field kimi-only">Thinking depth
             <select id="aiEffortSetting">
               <option value="low">Quick (low)</option>
@@ -352,6 +353,7 @@
             </p>
           </div>
 
+          <h4>Privacy</h4>
           <label class="chk"><input type="checkbox" id="aiRedact" /> <span>Mask secrets before sending to <span class="ai-name">Kimi</span></span></label>
           <label class="chk sub"><input type="checkbox" id="aiPii" /> Also mask emails, card and SSN patterns</label>
 
@@ -379,7 +381,7 @@
           <div class="actions">
             <button id="dataExport" type="button">Export…</button>
             <button id="dataImport" type="button">Import…</button>
-            <input id="dataFile" type="file" accept="application/json,.json" hidden />
+            <input id="dataFile" type="file" accept="application/json,.json" hidden aria-label="Choose a NetScope export file" />
           </div>
 
           <h4>Shortcut</h4>
