@@ -14,6 +14,7 @@ const CURL = () => globalThis.__netscopeCurl;
 
 let api = null;
 let entries = [];
+let logs = []; // console messages, errors and route changes (separate from network entries)
 let filtered = []; // [{ e, hits, dup… }]
 let selectedId = null;
 let matcherError = false;
@@ -217,6 +218,8 @@ function onPortMessage(msg) {
       break;
     case "snapshot":
       entries = Array.isArray(msg.entries) ? msg.entries : [];
+      logs = Array.isArray(msg.logs) ? msg.logs : [];
+      emit("logs");
       api._startedAt = msg.startedAt || Date.now();
       emit("snapshot");
       scheduleRefresh();
@@ -234,8 +237,21 @@ function onPortMessage(msg) {
       scheduleRefresh();
       break;
     }
+    case "logs":
+      for (const l of msg.logs || []) logs.push(l);
+      if (logs.length > 2000) logs.splice(0, logs.length - 2000);
+      emit("logs", msg.logs);
+      break;
+    case "logs-clear":
+      logs = [];
+      emit("logs");
+      break;
     case "clear":
       entries = [];
+      if (msg.logs) {
+        logs = [];
+        emit("logs");
+      }
       api._startedAt = msg.startedAt || Date.now();
       hideDetail();
       emit("clear");
@@ -291,6 +307,7 @@ function rpc(method, params) {
 api = {
   _startedAt: Date.now(),
   getEntries: () => entries,
+  getLogs: () => logs, // console messages, errors, route changes
   subscribe(fn) {
     listeners.add(fn);
     return () => listeners.delete(fn);
@@ -352,6 +369,8 @@ function switchView(view) {
   if (view === "chat") setTimeout(() => $("aiInput").focus(), 0);
   if (window.__netscopeFlowsUi && view === "flows") window.__netscopeFlowsUi.onShown();
   if (window.__netscopeDocsUi && view === "docs") window.__netscopeDocsUi.onShown();
+  if (window.__netscopeConsoleUi && view === "console") window.__netscopeConsoleUi.onShown();
+  if (window.__netscopeAppUi && view === "app") window.__netscopeAppUi.onShown();
 }
 
 /* ------------------------------------------------------------- trace */

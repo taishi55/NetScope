@@ -28,7 +28,7 @@
     }
   };
 
-  const HOOK_TYPES = new Set(["http-start", "http-res", "http-body", "ws-open", "ws-frame", "ws-close", "ws-error"]);
+  const HOOK_TYPES = new Set(["http-start", "http-res", "http-body", "ws-open", "ws-frame", "ws-close", "ws-error", "console"]);
   const isTop = window.top === window;
 
   function send(event) {

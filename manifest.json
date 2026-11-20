@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "NetScope – AI API Copilot: Network Logs, cURL Runner & Flows",
   "short_name": "NetScope",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "minimum_chrome_version": "116",
   "description": "Chat with Kimi or Muse about any page's API traffic, send requests from cURL like Postman, and automate multi-step API flows on a schedule.",
   "icons": {
@@ -34,7 +34,8 @@
     "alarms",
     "scripting",
     "unlimitedStorage",
-    "clipboardWrite"
+    "clipboardWrite",
+    "cookies"
   ],
   "host_permissions": [
     "<all_urls>"

@@ -74,6 +74,10 @@
         <button role="tab" id="tab-traffic" data-view="traffic" aria-selected="false" aria-controls="view-traffic">
           Traffic <span class="count" id="trafficCount"></span>
         </button>
+        <button role="tab" id="tab-console" data-view="console" aria-selected="false" aria-controls="view-console" title="Console messages, errors and route changes">
+          Console <span class="count" id="consoleCount"></span>
+        </button>
+        <button role="tab" id="tab-app" data-view="app" aria-selected="false" aria-controls="view-app" title="Framework, routes, components, state, storage, sources and DOM">App</button>
         <button role="tab" id="tab-flows" data-view="flows" aria-selected="false" aria-controls="view-flows">
           Flows <span class="count" id="flowsCount"></span>
         </button>
@@ -81,10 +85,10 @@
           Docs <span class="count" id="docsCount"></span>
         </button>
         <span class="spacer"></span>
-        <label class="switch" title="Keep captured requests when this page reloads or navigates">
+        <label class="switch" title="Keep captured requests and console messages when this page reloads or navigates">
           <input type="checkbox" id="preserve" role="switch" />
           <span class="track" aria-hidden="true"></span>
-          <span class="switch-label">Keep logs on reload</span>
+          <span class="switch-label">Keep logs</span>
         </label>
       </nav>
 
@@ -205,6 +209,43 @@
               <div id="detailBody"></div>
             </section>
           </div>
+        </section>
+
+        <!-- ========================================================= Console -->
+        <section id="view-console" class="view" role="tabpanel" aria-labelledby="tab-console">
+          <div class="pane-bar">
+            <div class="row">
+              <input id="conSearch" type="search" placeholder="Filter messages" autocomplete="off" spellcheck="false" aria-label="Filter console messages" />
+              <div id="conLevels" role="group" aria-label="Show messages of level"></div>
+            </div>
+            <div class="row sub">
+              <span id="conStats" class="pane-stats"></span>
+              <span class="spacer"></span>
+              <button id="conAsk" type="button" class="ghost">Explain errors</button>
+              <button id="conClear" type="button" class="ghost">Clear</button>
+            </div>
+          </div>
+          <div id="conList"></div>
+          <div id="conEmpty" class="pane-empty">
+            <p class="lead">No console messages yet</p>
+            <p>Logs, warnings, errors, failed resource loads and route changes appear here as the page produces them. Reload the page to capture its startup messages.</p>
+          </div>
+        </section>
+
+        <!-- ============================================================= App -->
+        <section id="view-app" class="view" role="tabpanel" aria-labelledby="tab-app">
+          <div class="pane-bar">
+            <div class="row">
+              <div id="appTabs" role="tablist" aria-label="Inspect"></div>
+            </div>
+            <div class="row sub">
+              <span id="appStats" class="pane-stats"></span>
+              <span class="spacer"></span>
+              <button id="appRefresh" type="button" class="ghost">Refresh</button>
+              <button id="appAsk" type="button" class="primary">Ask <span class="ai-name">Kimi</span> to map this app</button>
+            </div>
+          </div>
+          <div id="appBody"></div>
         </section>
 
         <!-- =========================================================== Flows -->
@@ -351,6 +392,7 @@
 
     <script src="curl.js"></script>
     <script src="ai-tools.js"></script>
+    <script src="ai-inspect-tools.js"></script>
     <script src="ai-client.js"></script>
     <script src="muse-client.js"></script>
     <script src="ai-agent.js"></script>
@@ -359,6 +401,8 @@
     <script src="ai-panel.js"></script>
     <script src="flows-ui.js"></script>
     <script src="docs-ui.js"></script>
+    <script src="console-ui.js"></script>
+    <script src="app-ui.js"></script>
     <script src="boot.js"></script>
   </body>
 </html>

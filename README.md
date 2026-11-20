@@ -22,8 +22,15 @@ needed.
 - **Flows and bots (Zapier-style, but programmable)** — chain requests, then filter, loop,
   branch, remember state between runs and call Kimi mid-flow. Run on demand, every N
   minutes, or whenever the page makes a matching request — in the background.
-- **Keep logs on reload** — one switch in the popup header keeps the captured traffic (and
-  the chat) across page reloads and navigations.
+- **Console and App — the rest of DevTools, read for meaning** — the **Console** tab shows the
+  page's logs, warnings and errors with their source line, uncaught exceptions, unhandled
+  rejections, failed resource loads, CSP violations and route changes. The **App** tab shows the
+  stack (React, Next.js, Remix, Vue, Nuxt, Angular, SvelteKit, …), routes, the component tree,
+  client state (Redux, React Query, Apollo, Next/Nuxt data, Pinia…), every kind of storage
+  (local/session, cookies including HttpOnly, IndexedDB, Cache Storage, service workers), the
+  code with source maps, and a semantic DOM outline. The AI reads all of it too.
+- **Keep logs** — one switch in the popup header keeps the captured traffic, console and chat
+  across page reloads and navigations.
 - **Traffic** — everything the old DevTools panel did, in the popup: full-text/regex search
   across URLs, headers, bodies and WebSocket frames, grouped repeats, request/response
   detail, **Edit & send** (Postman-style resend from an editable cURL), Copy cURL, and
@@ -112,6 +119,12 @@ token meter.
 | `http_request` | Send a request from a cURL, a captured request (`from_id`, real headers copied locally) or a URL, with overrides |
 | `validate_flow`, `save_flow`, `run_flow`, `list_flows`, `get_flow`, `get_collection`, `delete_flow` | Check, build, test (in the background for big jobs), schedule and manage flows; read their collections |
 | `list_docs`, `read_doc`, `write_doc`, `edit_doc`, `delete_doc` | Keep findings as markdown docs in the Docs tab |
+| `get_app_overview` | Stack and versions, build info, services, storage summary, performance, hosts, app globals, console counts |
+| `get_console_logs` | Console messages, exceptions, rejections, failed loads, CSP violations, route changes — with source and stack |
+| `list_routes` | Router tables (React Router/Remix with loaders and actions, Next pages, Vue Router/Nuxt, Gatsby), visited routes, link patterns, form actions |
+| `get_component_tree`, `get_app_state` | Rendered components with props and hooks; Redux, React Query, Apollo, Next/Nuxt data, Pinia, Vuex, Inertia, globals |
+| `get_storage`, `get_dom_outline` | local/session storage, cookies (HttpOnly too), IndexedDB records, Cache Storage; forms, fields and page structure |
+| `list_sources`, `search_sources`, `read_source` | Bundles and, through source maps, the original source files: file tree, search, read with line numbers |
 
 ### Conversations
 
@@ -306,6 +319,39 @@ For jobs like "collect 180 pages of a ranking, then fetch every user's profile":
 
 ![Flows tab with step results from the last run](docs/popup-flows.png)
 
+## Console and App
+
+**Console** keeps everything the page writes to its console (with the calling file and line),
+plus uncaught errors, unhandled promise rejections, failed image/script/style loads, CSP
+violations and single-page-app route changes. Filter by level or text, group repeats, expand a
+message for its full text and stack, and **Ask why** hands it to the AI with the context.
+
+**App** reads the page like the Elements, Application and Sources panels together — on demand,
+read-only:
+
+- **Overview** — frameworks and versions, build info (Next.js build id and data fetching, route
+  manifests, SvelteKit/Nuxt config), third-party services (analytics, auth, payments, error
+  tracking, feature flags), a storage summary, performance timings, first- and third-party hosts,
+  data embedded in the HTML and app-defined globals.
+- **Routes** — router tables where the framework exposes them (React Router / Remix manifests
+  with loader and action flags, Next.js build manifest, Vue Router / Nuxt, Gatsby), the routes
+  visited while NetScope watched, internal links grouped into patterns, and form actions.
+- **Components** — the rendered tree for React, Vue and Angular (prop names, hook counts, source
+  line in dev builds), Svelte dev metadata, Astro islands and web components.
+- **State** — Redux, React Query (every query key with its data), Apollo, Next.js and Nuxt data,
+  Pinia, Vuex, Remix loader data, Inertia, and any global such as `window.__INITIAL_STATE__`.
+- **Storage** — local and session storage, cookies (including HttpOnly, with flags and expiry),
+  IndexedDB databases, stores, indexes and records, and Cache Storage.
+- **Sources** — every script the page loaded, its source map, and the original file tree;
+  search and read the original files with line numbers.
+- **DOM** — a semantic outline: landmarks, headings, navigation, forms with every field,
+  tables, lists, dialogs, iframes and shadow roots.
+
+**Ask … to map this app** asks the AI for a full write-up — stack, routes, components, state,
+storage, API endpoints, auth and what the server must be doing (marked as inferred) — saved
+as a doc. What it cannot see: server code. It infers server behavior from the API traffic,
+route loaders and actions, and how the frontend calls and handles each endpoint.
+
 ## Traffic
 
 ![Large mode: the captured list beside a request's detail](docs/popup-traffic.png)
@@ -363,6 +409,8 @@ net-hook.js ─postMessage─▶ content.js ─sendMessage─▶ background.js �
 - `scripting` — injects the capture hook into tabs that were open before installing, and runs
   "send from the page" requests inside the site's tab.
 - `clipboardWrite` — the Copy buttons.
+- `cookies` — the App tab and the AI read the cookies the browser sends to the page you are on,
+  including HttpOnly ones (values are masked for the AI when **Mask secrets** is on).
 
 ## Privacy
 

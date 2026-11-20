@@ -32,6 +32,8 @@ window.__netscopeAiTools = (() => {
   function attach(a) {
     api = a;
   }
+  // "Kimi" or "Muse", for approval titles.
+  const aiName = () => (window.__netscopeAi && window.__netscopeAi.aiName && window.__netscopeAi.aiName()) || "Kimi";
   function setRedaction(on, pii) {
     redactOn = !!on;
     redactPii = !!pii;
@@ -1702,10 +1704,10 @@ window.__netscopeAiTools = (() => {
         kind: "http",
         fromPage: a.context === "page",
         title: isWriteMethod(req.method)
-          ? "Kimi wants to send a request that can change data"
+          ? aiName() + " wants to send a request that can change data"
           : known
-            ? "Kimi wants to send a request"
-            : `Kimi wants to call ${host || "a new host"}, which this page has not used`,
+            ? aiName() + " wants to send a request"
+            : `${aiName()} wants to call ${host || "a new host"}, which this page has not used`,
         method: req.method,
         url: req.url,
         headers: req.headers,
@@ -1728,10 +1730,10 @@ window.__netscopeAiTools = (() => {
       return {
         kind: "flow",
         title: t
-          ? `Kimi wants to save a flow that runs by itself when the page calls ${t.url_contains || t.method || "matching URLs"}`
+          ? `${aiName()} wants to save a flow that runs by itself when the page calls ${t.url_contains || t.method || "matching URLs"}`
           : flow.schedule.enabled
-            ? `Kimi wants to save a flow that runs every ${flow.schedule.every_minutes} min`
-            : "Kimi wants to save a flow",
+            ? `${aiName()} wants to save a flow that runs every ${flow.schedule.every_minutes} min`
+            : aiName() + " wants to save a flow",
         flow
       };
     }
@@ -1742,21 +1744,21 @@ window.__netscopeAiTools = (() => {
       } catch (_) {}
       if (!f) return null;
       if (policy === "writes" && !flowHasWrites(f.steps)) return null;
-      return { kind: "flow-run", title: `Kimi wants to run the flow “${f.name}”`, flow: f };
+      return { kind: "flow-run", title: `${aiName()} wants to run the flow “${f.name}”`, flow: f };
     }
     if (name === "delete_doc") {
       let d = null;
       try {
         d = await findDoc(a);
       } catch (_) {}
-      return { kind: "doc-delete", title: `Kimi wants to delete the doc “${d ? d.title : a.id || a.title}”` };
+      return { kind: "doc-delete", title: `${aiName()} wants to delete the doc “${d ? d.title : a.id || a.title}”` };
     }
     if (name === "delete_flow") {
       let f = null;
       try {
         f = await api.rpc("flows.get", { id: a.id });
       } catch (_) {}
-      return { kind: "flow-delete", title: `Kimi wants to delete the flow “${f ? f.name : a.id}”`, flow: f };
+      return { kind: "flow-delete", title: `${aiName()} wants to delete the flow “${f ? f.name : a.id}”`, flow: f };
     }
     return null;
   }
@@ -2215,6 +2217,13 @@ window.__netscopeAiTools = (() => {
     "delete_doc"
   ]);
 
+  // Other modules (ai-inspect-tools.js) add their tools here.
+  function register(defs, execs, opts) {
+    for (const d of defs || []) if (!TOOLS.some((t) => t.function.name === d.function.name)) TOOLS.push(d);
+    Object.assign(EXEC, execs || {});
+    for (const n of (opts && opts.unbudgeted) || []) UNBUDGETED.add(n);
+  }
+
   // Never throws. Every failure becomes a tool result the model can react to,
   // because an exception here would abort the whole run.
   async function runTool(name, args, run) {
@@ -2252,6 +2261,9 @@ window.__netscopeAiTools = (() => {
     describeJsonData,
     redactHeaders,
     scrubText,
+    jwtHint,
+    isRedacting: () => redactOn,
+    register,
     clipUrl,
     relT,
     inspectedPage,

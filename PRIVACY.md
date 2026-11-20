@@ -24,12 +24,28 @@ set, request body, response status, headers and body (up to 256 KB each), and We
 frames. Native behavior is unchanged. Requests the browser makes on its own (documents,
 images, scripts) are not captured.
 
+The same script records the page's **console**: messages of every level with the file and line
+that logged them, uncaught errors and unhandled promise rejections with their stack, failed
+resource loads, Content Security Policy violations, and the URLs a single-page app navigates to.
+Messages are copied as text (objects as a short preview, without running their getters).
+
+When you open the **App** tab, or the AI asks, NetScope reads more from the page you are on —
+only then, and only from that tab: its framework and version, routes, rendered components,
+client state (for example a Redux store or `window.__INITIAL_STATE__`), local and session
+storage, IndexedDB databases and records, Cache Storage, service worker registrations, the
+cookies the browser sends to the page (including HttpOnly cookies, through the `cookies`
+permission), a semantic outline of the DOM, and the list of scripts. To show the code, the
+background worker downloads the scripts the page loaded and their source maps from the same
+URLs, with the browser's cookies; they are kept in memory only, never on disk, and dropped when
+the worker stops. Reading is strictly read-only: NetScope writes no storage, cookies or
+databases of the site.
+
 Where it is kept:
 
-- **Capture log** — in the extension's IndexedDB on your machine, per tab. A new page load
-  starts a fresh log unless you turn on **Keep logs on reload**. A tab's log is deleted when
+- **Capture log and console** — in the extension's IndexedDB on your machine, per tab. A new
+  page load starts a fresh log unless you turn on **Keep logs**. A tab's log is deleted when
   the tab closes, and the whole database is wiped each time the browser starts. Each tab keeps
-  at most the last 3,000 entries.
+  at most the last 3,000 entries and 2,000 console messages.
 - **Conversations** — every chat, including the traffic excerpts and tool results it contains,
   in the extension's IndexedDB until you delete it from History.
 - **Docs** — markdown notes the AI or you write in the Docs tab, in the extension's IndexedDB
@@ -61,6 +77,9 @@ NetScope sends to `https://api.moonshot.ai/v1/chat/completions`:
 - your question and the conversation so far,
 - the parts of the captured traffic the model asks for through its tools — URLs, headers,
   request and response body fragments, WebSocket payloads,
+- what its inspection tools read from the page you are on — console messages, storage values,
+  cookies, IndexedDB records, app state, the DOM outline, and code from the page's scripts and
+  source maps,
 - the results of requests and flow runs it performs for you,
 - a short summary of the capture (counts, hosts, status codes).
 
@@ -81,7 +100,9 @@ Off by default. **Mask secrets before sending** replaces the values of `Authoriz
 **Also mask emails, card and SSN patterns** scrubs those too. Masking is best-effort pattern
 matching and cannot catch a secret in an arbitrary JSON field. Masked values are never sent
 by Kimi's requests: to replay a request with real credentials it references the captured
-entry, and NetScope copies the values locally without showing them to the model.
+entry, and NetScope copies the values locally without showing them to the model. With masking
+on, the inspection tools also hide every cookie value and the values of storage keys whose names
+look secret (token, auth, session, password, API key…).
 
 ### Your API key
 
@@ -149,6 +170,8 @@ used, flows that run by themselves or change data, and deleting flows — or for
   to a muse.ai tab that was open before NetScope was installed or updated.
 - **unlimitedStorage** — lets flow collections grow past Chrome's default storage quota.
 - **clipboardWrite** — the Copy buttons.
+- **cookies** — reads the cookies the browser sends to the page you are inspecting (including
+  HttpOnly ones) for the App tab and the AI. NetScope never sets or deletes cookies.
 
 ## Data collection
 

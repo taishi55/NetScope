@@ -12,6 +12,9 @@ Ask what an endpoint does, why a request failed, or how the whole API fits toget
 OR USE MUSE, WITH NO API KEY
 Prefer Meta's Muse? Sign in at muse.ai in a tab, keep it open (minimized is fine), and pick Muse in NetScope. NetScope talks to Muse in its own side chat, runs the same tools, and shows the answer right on the page.
 
+SEE THE WHOLE APP, NOT JUST ITS TRAFFIC
+A Console tab with every log, warning and error (with the file and line), uncaught exceptions, failed loads and route changes. An App tab that reads the page like DevTools' Elements, Application and Sources panels together: the framework and its version, routes, the component tree, client state (Redux, React Query, Apollo, Next/Nuxt data, Pinia…), local and session storage, cookies including HttpOnly, IndexedDB, Cache Storage, service workers, and the code — with source maps, the original source files. One click asks the AI to map the app and write it up.
+
 CALL APIS LIKE POSTMAN
 Paste a cURL into the chat and Kimi runs it and explains the response, or ask it to replay a request the page made with different parameters. Or do it yourself: Edit & send turns any captured request into an editable cURL with a Send button. Requests run from the extension, so CORS doesn't get in the way. Kimi works on autopilot by default; one setting makes anything that changes data wait for your click.
 
@@ -73,3 +76,6 @@ Data usage — collected or transferred:
 Website content (the page's API traffic) is processed locally and stored in the extension's IndexedDB per tab, cleared on each page load unless the user enables "Keep logs on reload", on tab close, and on browser start. It is transferred only (1) to api.moonshot.ai when the user has enabled the optional assistant with their own key and asks it something, solely to answer, and (2) as HTTP requests the user sends or schedules, to the URLs those requests name. The user consents explicitly before the assistant can run, can require a click for requests that change data, and the chat shows exactly what was sent.
 
 Nothing is sold, nothing is shared with any other party, nothing is used for advertising or creditworthiness, and the developer receives no data of any kind.
+
+Permission "cookies":
+Shows the user the cookies their browser sends to the page they are inspecting (including HttpOnly cookies, with Secure/SameSite flags and expiry), in the App tab and to the optional AI assistant, so they can debug sessions and authentication. Read-only: NetScope never sets, changes or deletes cookies.

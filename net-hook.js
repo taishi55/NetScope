@@ -12,6 +12,10 @@
  * capture reads a clone that is cancelled once the size cap is reached.
  * Requests the browser makes on its own (documents, images, scripts) are not
  * seen here — this is an API-traffic tool.
+ *
+ * It also mirrors the page's console (every level, with the calling source
+ * line), uncaught errors and promise rejections, failed resource loads, CSP
+ * violations and SPA route changes, in batches (type "console").
  */
 (() => {
   "use strict";
@@ -454,4 +458,259 @@
       }
     });
   }
+  /* ------------------------------------------------------------ console */
+
+  // Console calls are passed through unchanged (Chrome DevTools ignore-lists
+  // extension scripts, so it still shows the page's own call site). A copy is
+  // serialized right away — objects change later — without running getters,
+  // rate-limited per frame and sent in batches. Timers are the native ones
+  // saved now, before frameworks like zone.js patch them.
+  (() => {
+    const RATE = 120; // messages per second per frame; beyond that only a count is kept
+    const MAX_TEXT = 4000;
+    const MAX_STACK = 3000;
+    const nativeSetTimeout = window.setTimeout.bind(window);
+    let buf = [];
+    let timer = 0;
+    let windowStart = 0;
+    let inWindow = 0;
+    let dropped = 0;
+    let busy = false;
+
+    const flush = () => {
+      timer = 0;
+      if (!buf.length) return;
+      const items = buf;
+      buf = [];
+      post({ type: "console", frame: location.href, items });
+    };
+    // Counts one message against the per-second budget; false = over it (only counted).
+    const admit = () => {
+      const t = Date.now();
+      if (t - windowStart > 1000) {
+        if (dropped) buf.push({ level: "warn", kind: "netscope", text: `${dropped} more console messages within one second were not captured (rate limit)`, ts: t });
+        windowStart = t;
+        inWindow = 0;
+        dropped = 0;
+      }
+      if (++inWindow > RATE) {
+        dropped++;
+        return false;
+      }
+      return true;
+    };
+    const push = (item, admitted) => {
+      if (!admitted && !admit()) return;
+      const t = Date.now();
+      item.ts = t;
+      if (item.text && item.text.length > MAX_TEXT) item.text = item.text.slice(0, MAX_TEXT) + " …";
+      buf.push(item);
+      if (buf.length >= 40) flush();
+      else if (!timer) timer = nativeSetTimeout(flush, 250);
+    };
+
+    const ctorName = (v) => {
+      try {
+        const p = Object.getPrototypeOf(v);
+        return p && p.constructor && p.constructor.name;
+      } catch (_) {
+        return "";
+      }
+    };
+    const nodeText = (n) => {
+      try {
+        if (n.nodeType !== 1) return n.nodeName.toLowerCase();
+        let s = "<" + n.tagName.toLowerCase();
+        if (n.id) s += "#" + n.id;
+        if (typeof n.className === "string" && n.className.trim()) s += "." + n.className.trim().split(/\s+/).slice(0, 3).join(".");
+        return s + ">";
+      } catch (_) {
+        return "<node>";
+      }
+    };
+    // DevTools-like one-line preview. Getters are never run (they could have side effects).
+    const fmt = (v, d, seen) => {
+      const t = typeof v;
+      if (v === null) return "null";
+      if (t === "undefined") return "undefined";
+      if (t === "string") return d === 0 ? v : JSON.stringify(v.length > 300 ? v.slice(0, 300) + "…" : v);
+      if (t === "number" || t === "boolean") return String(v);
+      if (t === "bigint") return String(v) + "n";
+      if (t === "symbol") return String(v);
+      if (t === "function") return "ƒ " + (v.name || "anonymous") + "()";
+      try {
+        if (v instanceof Error) return (v.name || "Error") + ": " + v.message;
+        if (typeof Node !== "undefined" && v instanceof Node) return nodeText(v);
+        if (v instanceof Date) return isNaN(v) ? "Invalid Date" : v.toISOString();
+        if (v instanceof RegExp) return String(v);
+        if (typeof Window !== "undefined" && v instanceof Window) return "Window";
+      } catch (_) {}
+      if (seen.has(v)) return "[Circular]";
+      seen.add(v);
+      try {
+        if (Array.isArray(v)) {
+          if (d >= 3) return `Array(${v.length})`;
+          const items = v.slice(0, 20).map((x) => fmt(x, d + 1, seen));
+          return "[" + items.join(", ") + (v.length > 20 ? `, … ${v.length - 20} more` : "") + "]";
+        }
+        if (v instanceof Map) return `Map(${v.size})` + (d >= 3 ? "" : " {" + Array.from(v).slice(0, 10).map(([k, x]) => fmt(k, d + 1, seen) + " => " + fmt(x, d + 1, seen)).join(", ") + (v.size > 10 ? ", …" : "") + "}");
+        if (v instanceof Set) return `Set(${v.size})` + (d >= 3 ? "" : " {" + Array.from(v).slice(0, 10).map((x) => fmt(x, d + 1, seen)).join(", ") + (v.size > 10 ? ", …" : "") + "}");
+        if (ArrayBuffer.isView(v)) return `${ctorName(v) || "TypedArray"}(${v.length})`;
+        const name = ctorName(v);
+        const keys = Object.keys(v);
+        if (d >= 3) return (name && name !== "Object" ? name + " " : "") + `{…${keys.length} keys}`;
+        const parts = keys.slice(0, 25).map((k) => {
+          const desc = Object.getOwnPropertyDescriptor(v, k);
+          return k + ": " + (desc && "value" in desc ? fmt(desc.value, d + 1, seen) : "(getter)");
+        });
+        return (name && name !== "Object" ? name + " " : "") + "{" + parts.join(", ") + (keys.length > 25 ? `, … ${keys.length - 25} more` : "") + "}";
+      } catch (_) {
+        return "{…}";
+      }
+    };
+    const preview = (v) => {
+      const s = fmt(v, 0, new WeakSet());
+      return s.length > 2000 ? s.slice(0, 2000) + "…" : s;
+    };
+
+    // console.log("%s has %d items", a, b) substitution; %c styles are dropped.
+    const format = (args) => {
+      const rest = Array.from(args);
+      let head = "";
+      if (typeof rest[0] === "string" && /%[sdifoOc]/.test(rest[0])) {
+        const f = rest.shift();
+        head = f.replace(/%([sdifoOc%])/g, (m, c) => {
+          if (c === "%") return "%";
+          if (!rest.length) return m;
+          const a = rest.shift();
+          if (c === "c") return "";
+          if (c === "d" || c === "i") return String(parseInt(a, 10));
+          if (c === "f") return String(parseFloat(a));
+          if (c === "s") return typeof a === "string" ? a : preview(a);
+          return preview(a);
+        });
+      }
+      const tail = rest.map(preview).join(" ");
+      return head && tail ? head + " " + tail : head || tail;
+    };
+
+    // Stack frames outside this extension: the first one is the call site.
+    const frames = (stack) =>
+      String(stack || "")
+        .split("\n")
+        .slice(1)
+        .map((l) => l.trim())
+        .filter((l) => l.startsWith("at ") && !l.includes("chrome-extension://"));
+    const siteOf = (line) => {
+      const m = /\(?((?:https?|file|blob|webpack|chrome):\/\/[^\s)]+?|[^\s()]+\.(?:js|mjs|ts|tsx|jsx|vue|svelte)[^\s)]*?):(\d+):(\d+)\)?$/.exec(line || "");
+      return m ? `${m[1]}:${m[2]}:${m[3]}` : "";
+    };
+    const stackOf = (err) => {
+      try {
+        const st = err && err.stack ? String(err.stack) : "";
+        return st.length > MAX_STACK ? st.slice(0, MAX_STACK) + "…" : st;
+      } catch (_) {
+        return "";
+      }
+    };
+
+    const LEVEL = { log: "log", info: "info", warn: "warn", error: "error", debug: "debug", trace: "trace", dir: "log", table: "log", assert: "error" };
+    const capture = (name, args) => {
+      if (name === "assert") {
+        if (args[0]) return;
+        args = ["Assertion failed:"].concat(Array.from(args).slice(1));
+      }
+      // Over the budget: count it and skip the formatting and stack work.
+      if (!admit()) return;
+      const level = LEVEL[name];
+      const fr = frames(new Error().stack);
+      const item = { level, kind: name === "table" ? "table" : name === "assert" ? "assert" : "console", text: format(args), source: siteOf(fr[0]) };
+      if (level === "error" || level === "warn" || level === "trace") {
+        const err = Array.from(args).find((a) => a instanceof Error);
+        item.stack = err ? stackOf(err) : fr.slice(0, 12).join("\n");
+      }
+      push(item, true);
+    };
+
+    const con = window.console;
+    if (con) {
+      for (const name of Object.keys(LEVEL)) {
+        const orig = con[name];
+        if (typeof orig !== "function") continue;
+        try {
+          con[name] = new Proxy(orig, {
+            apply(target, self, args) {
+              if (!busy) {
+                busy = true;
+                try {
+                  capture(name, args);
+                } catch (_) {}
+                busy = false;
+              }
+              return Reflect.apply(target, self, args);
+            }
+          });
+        } catch (_) {}
+      }
+    }
+
+    // Uncaught errors, and (capture phase) resources that failed to load.
+    window.addEventListener(
+      "error",
+      (ev) => {
+        try {
+          const el = ev.target;
+          if (el && el !== window && el.tagName) {
+            const url = el.currentSrc || el.src || el.href || "";
+            push({ level: "error", kind: "resource", text: `Failed to load <${el.tagName.toLowerCase()}> ${url}`.trim(), source: url });
+            return;
+          }
+          const where = ev.filename ? `${ev.filename}:${ev.lineno || 0}:${ev.colno || 0}` : "";
+          push({ level: "error", kind: "exception", text: "Uncaught " + (ev.error ? fmt(ev.error, 0, new WeakSet()) : ev.message || "error"), source: where, stack: stackOf(ev.error) });
+        } catch (_) {}
+      },
+      true
+    );
+    window.addEventListener("unhandledrejection", (ev) => {
+      try {
+        const r = ev.reason;
+        push({ level: "error", kind: "rejection", text: "Unhandled promise rejection: " + (r instanceof Error ? (r.name || "Error") + ": " + r.message : preview(r)), stack: stackOf(r) });
+      } catch (_) {}
+    });
+    try {
+      document.addEventListener("securitypolicyviolation", (ev) => {
+        push({
+          level: "error",
+          kind: "csp",
+          text: `Content Security Policy blocked ${ev.blockedURI || "inline code"} (${ev.effectiveDirective || ev.violatedDirective})`,
+          source: ev.sourceFile ? `${ev.sourceFile}:${ev.lineNumber || 0}:${ev.columnNumber || 0}` : ""
+        });
+      });
+    } catch (_) {}
+
+    // Single-page-app navigation: every distinct URL the app routes to.
+    let lastUrl = location.href;
+    const routed = (how) => {
+      if (location.href === lastUrl) return;
+      lastUrl = location.href;
+      push({ level: "route", kind: how, text: location.href });
+    };
+    for (const m of ["pushState", "replaceState"]) {
+      try {
+        history[m] = new Proxy(history[m], {
+          apply(target, self, args) {
+            const r = Reflect.apply(target, self, args);
+            try {
+              routed(m);
+            } catch (_) {}
+            return r;
+          }
+        });
+      } catch (_) {}
+    }
+    window.addEventListener("popstate", () => routed("popstate"));
+    window.addEventListener("hashchange", () => routed("hashchange"));
+    window.addEventListener("pagehide", flush);
+  })();
+
 })();

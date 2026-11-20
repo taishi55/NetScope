@@ -12,7 +12,7 @@
  */
 "use strict";
 
-importScripts("curl.js", "bg-store.js", "ai-client.js", "muse-client.js", "flow-engine.js");
+importScripts("curl.js", "bg-store.js", "ai-client.js", "muse-client.js", "flow-engine.js", "page-inspect.js", "bg-sources.js");
 
 const Store = globalThis.__netscopeStore;
 const Flows = globalThis.__netscopeFlows;
@@ -93,7 +93,7 @@ chrome.runtime.onConnect.addListener((port) => {
           ui: t.ui,
           page: { url: tab.url || "", title: tab.title || "" }
         });
-        port.postMessage({ type: "snapshot", entries: t.entries, startedAt: t.startedAt });
+        port.postMessage({ type: "snapshot", entries: t.entries, logs: t.logs, startedAt: t.startedAt });
       } catch (_) {}
     })
   );
@@ -147,10 +147,11 @@ function handleEvent(tabId, frameId, ev) {
       case "page": {
         if (frameId !== 0) return { ui: t.ui };
         await prefsLoaded;
-        if (!prefs.preserve && t.entries.length) {
-          await Store.clear(t);
-          broadcast(tabId, { type: "clear", startedAt: t.startedAt });
+        if (!prefs.preserve && (t.entries.length || t.logs.length)) {
+          await Store.clear(t, true);
+          broadcast(tabId, { type: "clear", logs: true, startedAt: t.startedAt });
         }
+        globalThis.__netscopeSources.forget(tabId);
         const e = Store.add(t, { kind: "nav", url: String(ev.url || ""), title: String(ev.title || ""), startedAt: ev.ts || Date.now() });
         broadcast(tabId, { type: "add", entry: e });
         return { ui: t.ui };
@@ -231,6 +232,28 @@ function handleEvent(tabId, frameId, ev) {
         Store.update(t, e, patch);
         broadcast(tabId, { type: "update", entry: e });
         if (finished) maybeTrigger(tabId, e);
+        return null;
+      }
+      case "console": {
+        // A batch of console messages / errors / route changes from one frame.
+        const items = Array.isArray(ev.items) ? ev.items.slice(0, 60) : [];
+        const frame = frameId === 0 ? "" : String(ev.frame || "").slice(0, 500);
+        const added = [];
+        for (const it of items) {
+          if (!it || typeof it !== "object") continue;
+          const level = ["log", "info", "warn", "error", "debug", "trace", "route"].includes(it.level) ? it.level : "log";
+          const l = {
+            level,
+            kind: String(it.kind || "console").slice(0, 20),
+            text: String(it.text == null ? "" : it.text).slice(0, 4000),
+            source: String(it.source || "").slice(0, 600),
+            ts: Number(it.ts) || Date.now()
+          };
+          if (it.stack) l.stack = String(it.stack).slice(0, 3000);
+          if (frame) l.frame = frame;
+          added.push(Store.addLog(t, l));
+        }
+        if (added.length) broadcast(tabId, { type: "logs", logs: added });
         return null;
       }
       case "ws-open":
@@ -944,8 +967,68 @@ async function importData(data) {
 
 /* ----------------------------------------------------------------- rpc */
 
+/* ------------------------------------------------------------ inspect */
+
+// Runs the read-only page inspector (page-inspect.js) in the tab's main world.
+async function inspectTab(tabId, op, args) {
+  let tab;
+  try {
+    tab = await chrome.tabs.get(tabId);
+  } catch (_) {
+    throw new Error("That tab is gone.");
+  }
+  if (!/^(https?|file):/.test(tab.url || "")) {
+    throw new Error("This page can't be inspected (" + String(tab.url || "").split(":")[0] + " page). Open NetScope on the website itself.");
+  }
+  if (op === "cookies") return cookiesFor(tab.url, args);
+  const run = chrome.scripting.executeScript({
+    target: { tabId, frameIds: [0] },
+    world: "MAIN",
+    func: globalThis.__netscopeInspector,
+    args: [op, args || {}]
+  });
+  const res = await Promise.race([run, new Promise((_, reject) => setTimeout(() => reject(new Error("the page did not answer within 20 s")), 20000))]);
+  const out = res && res[0] && res[0].result;
+  if (!out) throw new Error("the inspector returned nothing (the page may be navigating)");
+  return out;
+}
+
+// Every cookie the browser would send to this page, HttpOnly ones included.
+async function cookiesFor(url, args) {
+  if (!chrome.cookies) return { error: "cookie access is not available" };
+  const list = await chrome.cookies.getAll({ url });
+  const max = Math.min(Number(args && args.value_chars) || 300, 4000);
+  return {
+    url,
+    count: list.length,
+    cookies: list
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((c) => ({
+        name: c.name,
+        value: c.value.length > max ? c.value.slice(0, max) + "…" : c.value,
+        chars: c.value.length,
+        domain: c.domain,
+        path: c.path,
+        httpOnly: c.httpOnly,
+        secure: c.secure,
+        sameSite: c.sameSite,
+        session: c.session,
+        expires: c.expirationDate ? new Date(c.expirationDate * 1000).toISOString() : undefined,
+        partitioned: c.partitionKey ? true : undefined
+      }))
+  };
+}
+
 async function handleRpc(tabId, method, p) {
   switch (method) {
+    case "inspect":
+      return inspectTab(tabId, String(p.op || ""), p.args || {});
+    case "sources.list":
+      return globalThis.__netscopeSources.list(tabId, inspectTab, p);
+    case "sources.search":
+      return globalThis.__netscopeSources.search(tabId, inspectTab, p);
+    case "sources.read":
+      return globalThis.__netscopeSources.read(tabId, inspectTab, p);
     case "clear":
       return Store.withTab(tabId, async (t) => {
         await Store.clear(t);
@@ -953,7 +1036,13 @@ async function handleRpc(tabId, method, p) {
         return true;
       });
     case "snapshot":
-      return Store.withTab(tabId, (t) => ({ entries: t.entries, startedAt: t.startedAt }));
+      return Store.withTab(tabId, (t) => ({ entries: t.entries, logs: t.logs, startedAt: t.startedAt }));
+    case "logs.clear":
+      return Store.withTab(tabId, async (t) => {
+        await Store.clearLogs(t);
+        broadcast(tabId, { type: "logs-clear" });
+        return true;
+      });
     case "setPreserve":
       prefs = Object.assign({}, prefs, { preserve: !!p.preserve });
       await chrome.storage.local.set({ [PREFS_KEY]: prefs });
@@ -1108,6 +1197,7 @@ chrome.action.onClicked.addListener(toggle);
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   Store.drop(tabId);
+  globalThis.__netscopeSources.forget(tabId);
 });
 
 chrome.runtime.onStartup.addListener(() => {
