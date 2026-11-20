@@ -319,9 +319,13 @@ window.__netscopeSeo = (() => {
     if (u.noindex) add("high", "Your page has a noindex robots tag, so Google will not rank it.");
     if (u.canonical_elsewhere) add("high", `Its canonical link points to ${u.canonical}, so Google credits that URL instead.`);
     if (u.looks_404) add("high", "Your page looks like a “not found” page.");
+    if (u.unreadable) add("high", `Your page shows almost no text (${u.words} words) to a first-time visitor; Google may treat it as thin, or its content needs a sign-in or a click.`);
     if (row.user.mapped === "homepage") add("high", `No page on ${host} targets this query; your homepage is the closest match. Create a page for it.`);
     const missT = terms.filter((t) => !(u.title_terms || []).includes(t));
     if (missT.length) add(cs.some((c) => missT.every((t) => (c.title_terms || []).includes(t))) ? "high" : "medium", `Title is missing ${list(missT)}${cs.some((c) => missT.every((t) => (c.title_terms || []).includes(t))) ? " — the top results have it" : ""}.`);
+    const phrase = String(row.query || "").toLowerCase();
+    const inHead = (a) => String(a.title || "").toLowerCase().includes(phrase) || (a.h1 || []).some((h) => h.toLowerCase().includes(phrase));
+    if (phrase.split(" ").length > 1 && !inHead(u) && cs.some(inHead)) add("low", `The exact phrase “${row.query}” is not in your title or H1; a top result has it.`);
     if (!(u.h1 || []).length) add("high", "No H1 heading.");
     else {
       const missH = terms.filter((t) => !(u.h1_terms || []).includes(t));
@@ -338,7 +342,8 @@ window.__netscopeSeo = (() => {
     }
     const compSchema = new Set(cs.flatMap((c) => c.schema || []));
     const missingSchema = Array.from(compSchema).filter((t) => USEFUL_SCHEMA.has(t) && !(u.schema || []).includes(t));
-    if (missingSchema.length) add("medium", `The top results use ${missingSchema.slice(0, 4).join(", ")} structured data; you do not.`);
+    const mineUseful = (u.schema || []).filter((t) => USEFUL_SCHEMA.has(t)).length;
+    if (missingSchema.length) add(mineUseful >= 3 ? "low" : "medium", `The top results use ${missingSchema.slice(0, 4).join(", ")} structured data; you do not.`);
     else if (!(u.schema || []).length) add("medium", "No structured data (JSON-LD) on the page.");
     if (!u.description) add("medium", "No meta description.");
     else if (u.description_len < 110 || u.description_len > 170) add("low", `Meta description is ${u.description_len} characters; aim for 150–160.`);
@@ -364,11 +369,16 @@ window.__netscopeSeo = (() => {
       const a = await api.rpc("seo.audit", { run, url, query, keep_text: true });
       return a || { url, error: "no answer" };
     } catch (err) {
-      return { url, error: String((err && err.message) || err) };
+      const m = String((err && err.message) || err);
+      // Chrome's own wording for a tab that shows its error page.
+      return { url, error: /error page|ERR_|Cannot access contents/i.test(m) ? "the page failed to load here (the site may refuse automated visits)" : m };
     }
   }
 
-  function finishAudit(a, paa) {
+  // A rival behind a bot or sign-in wall is skipped. Your own near-empty page
+  // is kept: that is a finding, not a reading failure.
+  function finishAudit(a, paa, own) {
+    if (a && !a.error && a.unreadable && !(own && !/bot check|sign-in wall/.test(a.unreadable))) a = { url: a.url, error: a.unreadable, title: a.title };
     if (!a || a.error) return { hits: [], audit: a };
     const hits = paaHits(a.text, paa);
     a.paa_answered = hits.filter(Boolean).length;
@@ -423,7 +433,7 @@ window.__netscopeSeo = (() => {
         }
         const organic = serp.organic || [];
         const own = organic.find((r) => sameSite(r.url, host));
-        const comps = organic.filter((r) => !sameSite(r.url, host)).slice(0, 2);
+        const others = organic.filter((r) => !sameSite(r.url, host));
         row.rank = own ? own.rank : null;
         row.serp = { people_also_ask: serp.people_also_ask || [], related_searches: serp.related_searches || [], features: serp.features || {}, organic: organic.slice(0, 10).map((r) => ({ rank: r.rank, domain: r.domain, url: r.url, title: r.title })) };
 
@@ -441,12 +451,19 @@ window.__netscopeSeo = (() => {
         if (o.onRow) o.onRow(row, i);
         say(`Reading your page and the top 2 for “${query}”…`);
         const paa = row.serp.people_also_ask;
-        const mine = finishAudit(await auditSafe(run, userUrl, query), paa);
+        const mine = finishAudit(await auditSafe(run, userUrl, query), paa, true);
         row.user = { url: userUrl, mapped, audit: mine.audit, paa_hits: mine.hits };
-        for (const c of comps) {
-          if (o.signal && o.signal.aborted) break;
+        // The top 2 other sites that can be read. A bot wall or sign-in wall
+        // (Reddit, X…) is noted and the next result takes its place.
+        row.skipped = [];
+        for (const c of others.slice(0, 5)) {
+          if (row.competitors.length >= 2 || (o.signal && o.signal.aborted)) break;
           const theirs = finishAudit(await auditSafe(run, c.url, query), paa);
-          if (theirs.audit) delete theirs.audit.internal_pages;
+          if (!theirs.audit || theirs.audit.error) {
+            row.skipped.push({ rank: c.rank, domain: c.domain, url: c.url, reason: (theirs.audit && theirs.audit.error) || "could not be read" });
+            continue;
+          }
+          delete theirs.audit.internal_pages;
           row.competitors.push({ rank: c.rank, url: c.url, domain: c.domain, title: c.title, snippet: c.snippet, audit: theirs.audit, paa_hits: theirs.hits });
         }
         if (row.user.audit) delete row.user.audit.internal_pages;
@@ -525,6 +542,7 @@ window.__netscopeSeo = (() => {
         error: x.error,
         your_page: x.user && x.user.url ? Object.assign({ url: x.user.url, how_chosen: x.user.mapped, score: x.user.score }, pick(x.user.audit)) : undefined,
         competitors: (x.competitors || []).map((c) => Object.assign({ rank: c.rank, url: c.url, google_title: c.title, google_snippet: c.snippet, score: c.score }, pick(c.audit))),
+        not_read: (x.skipped || []).length ? x.skipped.map((k) => `#${k.rank} ${k.domain}: ${k.reason}`) : undefined,
         serp: x.serp ? { people_also_ask: x.serp.people_also_ask, related_searches: x.serp.related_searches, features: x.serp.features, top_10: (x.serp.organic || []).map((o) => `${o.rank}. ${o.domain}`) } : undefined,
         gaps: (x.gaps || []).map((g) => `${g.sev}: ${g.text}`)
       }))

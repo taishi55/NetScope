@@ -17,7 +17,8 @@
 globalThis.__netscopeSerp = function () {
   const D = document;
   const clean = (s, n) => {
-    const t = String(s == null ? "" : s).replace(/\s+/g, " ").trim();
+    // Google double-escapes some snippets ("Buy &amp; sell").
+    const t = String(s == null ? "" : s).replace(/&amp;/g, "&").replace(/\s+/g, " ").trim();
     return n && t.length > n ? t.slice(0, n - 1) + "…" : t;
   };
   const body = clean(D.body ? D.body.innerText : "", 4000);
@@ -39,13 +40,24 @@ globalThis.__netscopeSerp = function () {
     }
   };
   // Containers that hold ads, carousels and widgets rather than ranked results.
-  const NOT_ORGANIC = "#tads,#tadsb,#bottomads,[data-text-ad],[aria-label='Ads'],[aria-label='Sponsored'],g-scrolling-carousel,[data-initq],.related-question-pair,[jsname='yEVEwb'],#botstuff,[role='complementary'],#rhs,g-section-with-header,[data-attrid='images universal'],[data-hveid] [role='list'] [role='listitem'] video";
+  const NOT_ORGANIC = "#tads,#tadsb,#bottomads,[data-text-ad],[aria-label='Ads'],[aria-label='Sponsored'],g-scrolling-carousel,[data-initq],.related-question-pair,[jsname='yEVEwb'],#botstuff,[role='complementary'],#rhs,g-section-with-header,[data-attrid='images universal']";
+  // A block with its own section heading ("Videos", "Discussions and forums",
+  // "Top stories") and several result links is a SERP feature, not one ranked
+  // result (live Google, 2026-11).
+  const isPack = (block) => !!block && !!block.querySelector("[role='heading'][aria-level='2']") && block.querySelectorAll("a h3, a [role='heading'][aria-level='3']").length > 1;
+  const packs = [];
   const root = D.querySelector("#rso") || D.querySelector("#search") || D.body;
   const organic = [];
   const seenUrl = new Set();
   for (const h3 of root.querySelectorAll("a h3, a [role='heading'][aria-level='3']")) {
     const a = h3.closest("a");
     if (!a || a.closest(NOT_ORGANIC)) continue;
+    const pack = a.closest("div.MjjYud");
+    if (pack && isPack(pack)) {
+      const name = clean(pack.querySelector("[role='heading'][aria-level='2']").innerText, 40);
+      if (name && !packs.includes(name)) packs.push(name);
+      continue;
+    }
     const url = real(a.getAttribute("href") || "");
     if (!/^https?:/.test(url)) continue;
     let host = "";
@@ -85,7 +97,7 @@ globalThis.__netscopeSerp = function () {
   const related = [];
   for (const a of D.querySelectorAll("#botstuff a[href*='/search?'], [data-hveid] a[href*='/search?q=']")) {
     const t = clean(a.innerText, 100);
-    if (!t || /^(next|previous|\d+|more results|images|videos|news|shopping|maps|all)$/i.test(t) || t.length < 4 || related.includes(t)) continue;
+    if (!t || /^(next|previous|\d+|more results|images|videos|news|shopping|maps|all|ai mode|forums|short videos)$/i.test(t) || t.length < 4 || related.includes(t)) continue;
     if (a.closest("#rso") && !a.closest("[data-abe], #bres, .y6Uyqe, [role='list']")) continue;
     related.push(t);
     if (related.length >= 10) break;
@@ -112,18 +124,27 @@ globalThis.__netscopeSerp = function () {
       ai_overview: text(/\bAI Overview\b/) || has("[data-attrid='SGEAnswer'], [jsname='N760b']") || undefined,
       ads: ads || (has("#tads") ? D.querySelectorAll("#tads > div").length : 0) || undefined,
       local_pack: has("[data-local-attribute], #lu_map, .rllt__details") || text(/\bPlaces\b.*\bMore places\b/) || undefined,
-      videos: has("g-scrolling-carousel video, [data-vid], [aria-label='Videos']") || text(/\nVideos\n/) || undefined,
+      videos: has("g-scrolling-carousel video, [data-vid], [aria-label='Videos']") || packs.includes("Videos") || undefined,
       images: has("[data-attrid='images universal'], #iur") || undefined,
       shopping: has(".commercial-unit-desktop-top, [aria-label='Shopping'], .cu-container") || undefined,
       top_stories: text(/\bTop stories\b/) || undefined,
-      knowledge_panel: has("#rhs .kp-wholepage, [data-attrid='title']") || undefined
+      knowledge_panel: has("#rhs .kp-wholepage, [data-attrid='title']") || undefined,
+      packs: packs.length ? packs : undefined
     },
     result_stats: stats || undefined
   };
 };
 
-globalThis.__netscopeSeoAudit = function (query) {
+globalThis.__netscopeSeoAudit = async function (query) {
   const D = document;
+  // Script-rendered pages: wait until the text stops growing (max ~6 s).
+  let last = -1;
+  for (let i = 0; i < 10; i++) {
+    const n = D.body ? D.body.innerText.length : 0;
+    if (D.readyState === "complete" && n === last && n > 0) break;
+    last = n;
+    await new Promise((r) => setTimeout(r, 600));
+  }
   const clean = (s, n) => {
     const t = String(s == null ? "" : s).replace(/\s+/g, " ").trim();
     return n && t.length > n ? t.slice(0, n - 1) + "…" : t;
@@ -135,9 +156,14 @@ globalThis.__netscopeSeoAudit = function (query) {
   const STOP = new Set("a an and are as at be by for from how i in is it of on or the to vs what when where which who why will with your you my me do does can best top near 2024 2025 2026".split(" "));
   const terms = Array.from(new Set(String(query || "").toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((t) => t.length > 1 && !STOP.has(t))));
   const phrase = String(query || "").toLowerCase().trim();
+  // Word variants count ("trades" and "traders" match "trading"), as they do for Google.
+  const stem = (t) => {
+    const s = t.length > 5 ? t.replace(/(ings?|ers?|ies|es|ed|s)$/, "") : t.replace(/s$/, "");
+    return s.length >= 4 ? s : t;
+  };
   const has = (s) => {
     const l = String(s || "").toLowerCase();
-    return terms.filter((t) => l.includes(t));
+    return terms.filter((t) => l.includes(stem(t)));
   };
 
   // Main text: skip navigation, header, footer, asides and hidden nodes.
@@ -174,12 +200,17 @@ globalThis.__netscopeSeoAudit = function (query) {
   const intro = lower.split(" ").slice(0, 120).join(" ");
   const termFreq = {};
   for (const t of terms) {
-    const re = new RegExp("(^|[^\\p{L}\\p{N}])" + t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gu");
+    const re = new RegExp("(^|[^\\p{L}\\p{N}])" + stem(t).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gu");
     termFreq[t] = (lower.match(re) || []).length;
   }
   const exact = phrase && phrase.length > 3 ? lower.split(phrase).length - 1 : 0;
 
-  const hs = (sel) => Array.from(D.querySelectorAll(sel)).filter((h) => !h.closest("nav, footer")).map((h) => clean(h.innerText, 120)).filter(Boolean);
+  // Visible headings only: app chrome keeps hidden dialog headings around.
+  const hs = (sel) =>
+    Array.from(D.querySelectorAll(sel))
+      .filter((h) => !h.closest("nav, footer, dialog:not([open]), [hidden], [aria-hidden='true']") && (!h.checkVisibility || h.checkVisibility({ checkVisibilityCSS: true })))
+      .map((h) => clean(h.innerText, 120))
+      .filter(Boolean);
   const h1 = hs("h1");
   const h2 = hs("h2");
   const h3 = hs("h3");
@@ -244,7 +275,8 @@ globalThis.__netscopeSeoAudit = function (query) {
     if (same && t && navLinks.length < 60 && u.pathname.length > 1 && !navLinks.some((l) => l.url === u.origin + u.pathname)) navLinks.push({ url: u.origin + u.pathname, text: t });
   }
   const imgs = Array.from(D.querySelectorAll("img")).filter((i) => !i.closest("nav, footer, header"));
-  const noAlt = imgs.filter((i) => !i.hasAttribute("alt") || (!i.alt.trim() && !(i.getAttribute("role") === "presentation"))).length;
+  // alt="" marks a decorative image, which is correct; only a missing alt counts.
+  const noAlt = imgs.filter((i) => !i.hasAttribute("alt") && i.getAttribute("role") !== "presentation" && i.getAttribute("aria-hidden") !== "true").length;
   const modern = imgs.filter((i) => /\.(webp|avif)(\?|$)/i.test(i.currentSrc || i.src)).length;
 
   // Speed, as far as a background tab can tell.
@@ -259,13 +291,18 @@ globalThis.__netscopeSeoAudit = function (query) {
   const title = clean(D.title, 300);
   const description = meta("meta[name='description']");
 
+  // A bot wall, sign-in wall or error page is not the page Google ranked.
+  const wall = /\b(verify you are human|are you a robot|access denied|blocked by network security|enable javascript|just a moment|checking your browser|log in to continue|sign in to continue|something went wrong)\b/i;
+  const unreadable = wall.test(text) && words < 250 ? "the site showed a bot check or sign-in wall instead of the page" : words < 60 ? "its content did not load here (it may need a sign-in or a click)" : "";
+
   return {
     url: location.href,
+    unreadable: unreadable || undefined,
     https: location.protocol === "https:",
     title,
     title_len: title.length,
     title_terms: has(title),
-    title_starts_with_term: terms.length ? terms.some((t) => title.toLowerCase().indexOf(t) > -1 && title.toLowerCase().indexOf(t) < 25) : false,
+    title_starts_with_term: terms.length ? terms.some((t) => title.toLowerCase().indexOf(stem(t)) > -1 && title.toLowerCase().indexOf(stem(t)) < 25) : false,
     description,
     description_len: description.length,
     description_terms: has(description),

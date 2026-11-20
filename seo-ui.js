@@ -220,7 +220,7 @@ window.__netscopeSeoUi = (() => {
     const done = r.rows.filter((x) => x.status === "done");
     const ranked = done.filter((x) => x.rank);
     const mine = done.map((x) => x.user.score).filter((n) => n != null);
-    const top = done.map((x) => (x.competitors[0] ? x.competitors[0].score : null)).filter((n) => n != null);
+    const top = done.flatMap((x) => x.competitors.map((c) => c.score)).filter((n) => n != null);
     const avg = (a) => (a.length ? Math.round(a.reduce((t, n) => t + n, 0) / a.length) : null);
     const high = done.reduce((t, x) => t + x.gaps.filter((g) => g.sev === "high").length, 0);
     const best = ranked.slice().sort((a, b) => a.rank - b.rank)[0];
@@ -239,7 +239,7 @@ window.__netscopeSeoUi = (() => {
     cell("In the top 10", `${ranked.length} of ${done.length}`, best ? `Best: #${best.rank} for “${best.query}”` : "Not ranking yet for these", ranked.length ? (ranked.length === done.length ? "good" : "") : "bad");
     const a = avg(mine);
     const b = avg(top);
-    cell("Your score", a == null ? "—" : `${a} / 100`, b == null ? "" : `#1 averages ${b}`, a != null && b != null ? (a >= b ? "good" : a < b - 10 ? "bad" : "") : "");
+    cell("Your score", a == null ? "—" : `${a} / 100`, b == null ? "" : `Top rivals average ${b}`, a != null && b != null ? (a >= b ? "good" : a < b - 10 ? "bad" : "") : "");
     cell("High-priority gaps", String(high), high ? "Fix these first" : "None found", high ? "bad" : "good");
     cell("Compared", `${done.length} ${done.length === 1 ? "query" : "queries"}`, `Your page and the top 2 for each${r.gl ? ", from " + r.gl.toUpperCase() : ""}`);
     wrap.appendChild(strip);
@@ -284,8 +284,8 @@ window.__netscopeSeoUi = (() => {
     for (const [label, cls] of [
       [live ? "Query and status" : "Query and biggest gap", ""],
       ["You", "c-sc"],
-      ["#1", "c-sc"],
-      ["#2", "c-sc"]
+      ["Rival 1", "c-sc"],
+      ["Rival 2", "c-sc"]
     ]) {
       const th = node("th", cls, label);
       th.scope = "col";
@@ -307,7 +307,7 @@ window.__netscopeSeoUi = (() => {
       const you = node("td", "c-sc");
       if (x.status === "done") {
         you.appendChild(node("span", "seo-score " + tone(x.user.score, x.competitors[0] && x.competitors[0].score), scoreText(x.user.score)));
-        you.appendChild(node("span", "seo-sub", x.rank ? `rank ${x.rank}` : "not top 10"));
+        you.appendChild(node("span", "seo-sub", x.rank ? `#${x.rank}` : "not top 10"));
       } else you.textContent = "…";
       tr.appendChild(you);
       for (let k = 0; k < 2; k++) {
@@ -315,7 +315,7 @@ window.__netscopeSeoUi = (() => {
         const td = node("td", "c-sc");
         if (c) {
           td.appendChild(node("span", "seo-score", scoreText(c.score)));
-          td.appendChild(node("span", "seo-sub", c.domain));
+          td.appendChild(node("span", "seo-sub", `#${c.rank} ${c.domain}`));
           td.title = c.url;
         } else td.textContent = x.status === "done" ? "—" : "";
         tr.appendChild(td);
@@ -434,6 +434,7 @@ window.__netscopeSeoUi = (() => {
     wrap.appendChild(t);
     box.appendChild(wrap);
 
+    if ((x.skipped || []).length) box.appendChild(node("p", "hint", "Not read: " + x.skipped.map((k) => `#${k.rank} ${k.domain} (${k.reason})`).join("; ") + ". The next results took their place."));
     const links = node("p", "seo-urls");
     for (const p of pages) {
       const a = node("a", "", `${p.label}: ${p.url}`);
@@ -455,7 +456,7 @@ window.__netscopeSeoUi = (() => {
       box.appendChild(ul);
     }
     const f = x.serp.features || {};
-    const feats = [f.ai_overview && "AI Overview", f.featured_snippet && "Featured snippet", f.ads && `${f.ads} ads`, f.local_pack && "Local pack", f.videos && "Videos", f.shopping && "Shopping", f.top_stories && "Top stories", f.images && "Images", f.knowledge_panel && "Knowledge panel"].filter(Boolean);
+    const feats = [f.ai_overview && "AI Overview", f.featured_snippet && "Featured snippet", f.ads && `${f.ads} ads`, f.local_pack && "Local pack", f.videos && "Videos", f.shopping && "Shopping", f.top_stories && "Top stories", f.images && "Images", f.knowledge_panel && "Knowledge panel"].concat((f.packs || []).filter((x) => x !== "Videos")).filter(Boolean);
     if (feats.length || (x.serp.related_searches || []).length) {
       const p = node("p", "seo-feats");
       if (feats.length) p.appendChild(node("span", "", "On the results page: " + feats.join(", ") + ". "));
