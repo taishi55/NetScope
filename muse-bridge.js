@@ -7,8 +7,9 @@
  * does all the waiting and polling, because timers in a hidden or minimized
  * tab are throttled (down to once a minute) and would stall a reply.
  *
- * It only ever clicks Muse's Send and Stop buttons in the message box. It
- * never answers Muse's approval requests or touches anything else on the page.
+ * It clicks only Muse's Send and Stop buttons in the message box and, once an
+ * answer is read, Archive in the menu of NetScope's own side chat. It never
+ * answers Muse's approval requests or touches anything else on the page.
  */
 "use strict";
 
@@ -55,6 +56,7 @@
       path: location.pathname,
       thread: threadOf(location.pathname),
       busy: !!stopButton(),
+      canSend: !!sendButton(),
       draft: !!(ta && ta.value.trim() && !/^\(ns-\w+\)/.test(ta.value)), // the user's own unsent text, not NetScope's
       hidden: document.hidden,
       url: location.href
@@ -228,6 +230,38 @@
     });
   }
 
+  // Archiving the open side chat, one synchronous step per call (the worker
+  // waits between them): open its row menu, click Archive, check it is gone.
+  const currentRow = () => document.querySelector('[data-testid="hatch-thread-row"][aria-current="page"]');
+  function archive(thread, step) {
+    if (!thread || threadOf(location.pathname) !== thread) return { ok: false, error: "not-here" };
+    // Archived = the side-chat panel is showing rows but none is this one
+    // (a closed panel shows no rows at all, which proves nothing).
+    if (step === "check") return { ok: true, done: !!document.querySelector('[data-testid="hatch-thread-row"]') && !currentRow() };
+    if (step === "menu") {
+      const row = currentRow();
+      if (!row) {
+        // The side-chat panel is closed: open it, then try again.
+        const t = document.querySelector('[data-testid="hatch-chat-switcher-trigger"]');
+        if (t) t.click();
+        return { ok: false, retry: true };
+      }
+      if (/^main chat$/i.test(row.textContent.trim())) return { ok: false, error: "main" };
+      const more = row.querySelector('button[aria-label="More thread actions"]');
+      if (!more) return { ok: false, error: "no-menu" };
+      more.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, button: 0, pointerType: "mouse" }));
+      return { ok: true };
+    }
+    if (step === "click") {
+      // Exactly "Archive" — never Delete or anything else in that menu.
+      const item = Array.from(document.querySelectorAll('[role="menuitem"]')).find((i) => i.textContent.trim() === "Archive");
+      if (!item) return { ok: false, retry: true };
+      item.click();
+      return { ok: true };
+    }
+    return { ok: false, error: "unknown-step" };
+  }
+
   function stop() {
     const b = stopButton();
     if (b) b.click();
@@ -245,6 +279,7 @@
       else if (msg.op === "submit") res = submit();
       else if (msg.op === "read") res = read(String(msg.marker || ""));
       else if (msg.op === "stop") res = stop();
+      else if (msg.op === "archive") res = archive(String(msg.thread || ""), String(msg.step || ""));
       else if (msg.op === "goto") {
         const url = new URL(String(msg.url || ""), location.origin);
         if (url.origin !== location.origin) res = { ok: false, error: "bad-url" };

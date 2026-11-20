@@ -8,10 +8,12 @@
  *   - protocol: Muse has no function-calling API, so the first message
  *     teaches it to call NetScope's tools with ```tool JSON blocks; replies
  *     are parsed back into OpenAI-style tool_calls for the agent loop.
- *   - threads: each NetScope conversation maps to one Muse side chat, found
- *     by a hash of the last answer, so only new turns are sent (Muse keeps
- *     the history). An edited or rewound conversation starts a new side chat
- *     with a condensed replay.
+ *   - threads: like a stateless API, every question (and every AI step in a
+ *     flow) starts a fresh Muse side chat carrying NetScope's rules and a
+ *     condensed replay of the conversation so far. Only the tool results of
+ *     the question in progress go into an existing side chat, found by a hash
+ *     of the answer that asked for them. Once Muse's final answer is read,
+ *     the side chat is archived (Muse → Show archived chats brings it back).
  *   - driver (worker only): finds the Muse tab, opens the side chat, fills
  *     and submits, then polls until Muse is done. The worker does the
  *     waiting because a hidden tab's own timers are throttled.
@@ -25,9 +27,9 @@ globalThis.__netscopeMuse = (() => {
   const THREADS_KEY = "netscope.muse.threads";
   const MAX_THREADS = 300;
   const RESULT_CAP = 14000; // chars of one tool result sent to Muse
-  const TURN_CAP = 60000; // chars of one message sent to Muse
+  const TURN_CAP = 60000; // chars of one message sent to Muse (rules + replay + request)
+  const HARD_CAP = 120000; // never type more than this into Muse's box
   const REPLAY_CAP = 40000; // chars of earlier conversation replayed into a new side chat
-  const SESSION_TURNS = 20; // a named session (one flow's AI steps) moves to a fresh side chat after this many
   const IDLE_LIMIT = 8 * 60000; // Muse silent this long while busy: give up
   const HARD_LIMIT = 20 * 60000; // one reply, start to finish
   const inWorker = typeof window === "undefined";
@@ -101,17 +103,18 @@ globalThis.__netscopeMuse = (() => {
   // one whose history still holds the removed turns.
   // Read-modify-write of one shared map: one writer at a time, or a chat
   // answer and a flow step finishing together could drop each other's entry.
-  function rememberThread(key, thread, turns) {
+  // key null: forget the side chat (its question is answered and it is archived).
+  function rememberThread(key, thread) {
     if (!thread || thread === "new" || thread === "main") return Promise.resolve();
-    return serial("map", () => writeThread(key, thread, turns));
+    return serial("map", () => writeThread(key, thread));
   }
 
-  async function writeThread(key, thread, turns) {
+  async function writeThread(key, thread) {
     try {
       const got = await chrome.storage.local.get(THREADS_KEY);
       const map = (got && got[THREADS_KEY]) || {};
-      if (!key.startsWith("session:")) for (const k of Object.keys(map)) if (map[k].thread === thread && !k.startsWith("session:")) delete map[k];
-      map[key] = { thread, t: Date.now(), n: turns || 1 };
+      for (const k of Object.keys(map)) if (map[k].thread === thread) delete map[k];
+      if (key) map[key] = { thread, t: Date.now() };
       const keys = Object.keys(map);
       if (keys.length > MAX_THREADS) {
         keys.sort((a, b) => map[a].t - map[b].t);
@@ -137,8 +140,7 @@ globalThis.__netscopeMuse = (() => {
       .join("\n\n");
   }
 
-  // standalone: every message is its own task (AI steps in flows).
-  function header(system, tools, forceTool, standalone) {
+  function header(system, tools, forceTool) {
     const lines = [
       "[NetScope] This side chat is run by NetScope, a browser extension the user installed. You are its reasoning engine for this conversation.",
       "",
@@ -148,7 +150,6 @@ globalThis.__netscopeMuse = (() => {
       "- Work only with what NetScope sends you and the NetScope tools listed below. Do not use your own computer, browser, web search, email, files, scheduled tasks or approvals for this conversation, and do not ask the user to approve anything in Muse.",
       "- Every message here comes from NetScope. Each starts with a reference like (ns-1a2b3c); ignore it."
     ];
-    if (standalone) lines.push("- Each message is a separate task. Ignore earlier messages in this side chat.");
     if (tools && tools.length) {
       lines.push(
         "- To call NetScope tools, reply with one or more blocks exactly like this, each holding one JSON object:",
@@ -201,14 +202,14 @@ globalThis.__netscopeMuse = (() => {
   }
 
   // Earlier turns, newest kept when it is too long.
-  function renderReplay(msgs) {
+  function renderReplay(msgs, cap) {
     const out = [];
     let used = 0;
     for (let i = msgs.length - 1; i >= 0; i--) {
       const m = msgs[i];
       if (m.role === "system") continue;
       const s = (m.role === "user" ? "User:\n" : "") + renderMsg(m, 3000);
-      if (used + s.length > REPLAY_CAP) {
+      if (used + s.length > (cap || REPLAY_CAP)) {
         out.unshift("[Earlier messages left out for length.]");
         break;
       }
@@ -318,13 +319,7 @@ globalThis.__netscopeMuse = (() => {
 
   // Same contract as the Kimi transport in ai-client.js: resolves to
   // { assistantMessage, toolCalls, finishReason, usage, reasoning }.
-  // A flow's AI steps can run in parallel (for_each concurrency); they take
-  // turns per flow so they agree on one side chat and count turns correctly.
-  function chat(opts) {
-    return opts && opts.museSession ? serial("session:" + opts.museSession, () => chatNow(opts)) : chatNow(opts);
-  }
-
-  async function chatNow(opts) {
+  async function chat(opts) {
     const msgs = opts.messages || [];
     const tools = opts.tools || [];
     const known = new Set(tools.map((t) => (t.function || t).name));
@@ -337,24 +332,25 @@ globalThis.__netscopeMuse = (() => {
       }
     }
     const tail = msgs.slice(last + 1).filter((m) => m.role !== "system");
-    // A named session (one flow's AI steps) reuses a side chat for a while;
-    // every message in it is self-contained and says so, and the session moves
-    // to a fresh side chat every SESSION_TURNS messages so old tasks can't pile up.
-    const named = opts.museSession ? "session:" + opts.museSession : "";
-    const session = named ? await entryFor(named) : null;
-    const sessionTurns = session && session.thread && (session.n || 1) < SESSION_TURNS ? session.n || 1 : 0;
     // Keyed by the conversation's first question too, so two chats whose last
     // answers happen to match never share a side chat.
     const firstUser = msgs.find((m) => m.role === "user");
     const convKey = (answer) => fnv(String((firstUser && firstUser.content) || "").slice(0, 4000)) + hashAnswer(answer);
-    let thread = named ? (sessionTurns ? session.thread : null) : last >= 0 ? await threadFor(convKey(msgs[last])) : null;
+    // Only tool results continue a side chat (the one whose answer asked for
+    // them). Anything else — a new question, a flow step, Continue after an
+    // error — starts fresh, like a stateless API call.
+    const continuing = tail.some((m) => m.role === "tool");
+    let thread = continuing && last >= 0 ? await threadFor(convKey(msgs[last])) : null;
     let text;
-    if (named) text = header(system, tools, false, true) + "\n\n=== Request ===\n" + renderTail(tail);
-    else if (thread) text = renderTail(tail);
+    if (thread) text = renderTail(tail);
     else {
-      text = header(system, tools, opts.tool_choice === "required");
-      if (last >= 0) text += "\n\n=== The conversation so far ===\n" + renderReplay(msgs.slice(0, last + 1));
-      text += "\n\n=== " + (last >= 0 ? "Now" : "Request") + " ===\n" + renderTail(tail);
+      const head = header(system, tools, opts.tool_choice === "required");
+      const ask = "\n\n=== " + (last >= 0 ? "Now" : "Request") + " ===\n" + renderTail(tail);
+      // The replay gets whatever room the rules and the request leave.
+      const room = Math.min(REPLAY_CAP, TURN_CAP - head.length - ask.length - 200);
+      text = head;
+      if (last >= 0) text += "\n\n=== The conversation so far ===\n" + (room > 1500 ? renderReplay(msgs.slice(0, last + 1), room) : "[Left out for length.]");
+      text += ask;
     }
 
     let shown = "";
@@ -372,7 +368,9 @@ globalThis.__netscopeMuse = (() => {
     };
 
     for (let fix = 0; ; fix++) {
-      const r = await transport({ text, thread: thread || "new" }, hooks);
+      // known: lets the worker tell a final answer (archive its side chat)
+      // from a reply that calls tools, with the same parsing as here.
+      const r = await transport({ text, thread: thread || "new", known: Array.from(known) }, hooks);
       thread = r.thread && r.thread !== "new" ? r.thread : thread;
       const p = parse(r.text, known);
       if (p.bad && fix < 2) {
@@ -383,7 +381,9 @@ globalThis.__netscopeMuse = (() => {
       if (!p.content && !p.calls.length) throw Object.assign(museError("empty", "Muse's reply was empty. Check the muse.ai tab, then press Continue."), { retryable: false });
       const message = { role: "assistant", content: p.content };
       if (p.calls.length) message.tool_calls = p.calls;
-      await rememberThread(named || convKey(message), thread, named ? sessionTurns + 1 : 1);
+      // Tool calls: their results will continue this side chat. A final
+      // answer: the side chat is done (the worker archives it).
+      await rememberThread(p.calls.length ? convKey(message) : null, thread);
       return { assistantMessage: message, toolCalls: p.calls, finishReason: p.calls.length ? "tool_calls" : "stop", usage: null, reasoning: "" };
     }
   }
@@ -463,10 +463,65 @@ globalThis.__netscopeMuse = (() => {
       }
     }
 
+    // The answer goes back at once; the queue then archives a finished side
+    // chat before the next request may navigate the tab elsewhere.
     function ask(req, hooks) {
       const run = queue.then(() => askNow(req, hooks || {}));
-      queue = run.catch(() => {});
+      // A side chat the user stopped is archived too: the next question starts fresh anyway.
+      queue = run
+        .then(
+          (r) => (r && r.final ? archiveNow(r.thread, r.tabId) : null),
+          (e) => (e && e.name === "AbortError" && e.thread ? archiveNow(e.thread, e.tabId) : null)
+        )
+        .catch(() => {});
       return run;
+    }
+
+    // Archives a NetScope side chat through its row menu in Muse's chat
+    // panel. Best effort: a failure leaves the side chat in the list.
+    // tabId: the tab that answered, so another muse.ai tab is never touched.
+    async function archiveNow(thread, tabId) {
+      if (!thread || !/^[0-9a-f-]{16,}$/i.test(thread) || !Number.isInteger(tabId)) return false;
+      const st0 = await stateOf(tabId);
+      if (!st0 || !st0.signedIn) return false;
+      const f = { st: st0 };
+      const done = await archiveIn(tabId, thread, f);
+      // Its map entry goes too, so nothing (Continue after a Stop) posts into it again.
+      if (done) await rememberThread(null, thread);
+      return done;
+    }
+
+    async function archiveIn(tabId, thread, f) {
+      if (f.st.thread !== thread) {
+        if (f.st.draft) return false; // never navigate away from the user's own text
+        await tell(tabId, { op: "goto", url: ORIGIN + "/thread/" + thread }).catch(() => {});
+        await sleep(800);
+        const st = await waitState(tabId, 30000, (s) => s.ready && s.thread === thread);
+        if (!st || st.thread !== thread) return false;
+      }
+      const step = async (name, tries) => {
+        for (let k = 0; k < tries; k++) {
+          const r = await tell(tabId, { op: "archive", thread, step: name }).catch(() => null);
+          if (r && r.ok) return r;
+          if (!r || !r.retry) return null;
+          await sleep(400);
+        }
+        return null;
+      };
+      // Muse ignores Archive clicked right after its menu opens (tested: 0.2 s
+      // and 0.5 s did nothing, 1.5 s works), so wait, then check and retry.
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (!(await step("menu", 8))) return false;
+        await sleep(1500 + attempt * 1000);
+        if (!(await step("click", 6))) return false;
+        for (let k = 0; k < 15; k++) {
+          await sleep(300);
+          const r = await tell(tabId, { op: "archive", thread, step: "check" }).catch(() => null);
+          if (r && r.done) return true;
+          if (!r || r.error) return false;
+        }
+      }
+      return false;
     }
 
     async function askNow(req, hooks) {
@@ -507,19 +562,27 @@ globalThis.__netscopeMuse = (() => {
 
       const marker = "ns-" + Math.random().toString(36).slice(2, 8);
       // The marker leads, so it is found even if Muse folds a long message.
-      const text = `(${marker}) ` + String(req.text || "").slice(0, TURN_CAP);
-      const filled = await tell(tabId, { op: "fill", text }).catch(() => null);
-      if (!filled || !filled.ok) {
-        const why = filled && filled.error;
-        throw museError("fill", why === "busy" ? "Muse is busy in its tab. Wait for it to finish, then press Continue." : why === "signed-out" ? "Your muse.ai tab isn't signed in. Sign in there, then press Continue." : "NetScope couldn't type into Muse's message box. Reload the muse.ai tab, then press Continue.");
+      const text = `(${marker}) ` + String(req.text || "").slice(0, HARD_CAP);
+      // A freshly loaded side chat shows its message box before the page is
+      // wired up; Send only appears once it is. Fill again until it does
+      // (about a second or two after a load), then submit.
+      let canSend = false;
+      for (let k = 0; k < 30 && !canSend; k++) {
+        const filled = await tell(tabId, { op: "fill", text }).catch(() => null);
+        if (!filled || !filled.ok) {
+          const why = filled && filled.error;
+          throw museError("fill", why === "busy" ? "Muse is busy in its tab. Wait for it to finish, then press Continue." : why === "signed-out" ? "Your muse.ai tab isn't signed in. Sign in there, then press Continue." : "NetScope couldn't type into Muse's message box. Reload the muse.ai tab, then press Continue.");
+        }
+        await sleep(400, signal);
+        const s = await stateOf(tabId);
+        canSend = !!(s && s.canSend);
       }
-      // React shows Send a moment after the input event; submit falls back to Enter.
-      await sleep(350, signal);
-      const sent = await tell(tabId, { op: "submit" }).catch(() => null);
+      const sent = await tell(tabId, { op: "submit" }).catch(() => null); // falls back to Enter without Send
       if (!sent || !sent.ok) throw museError("send", "Muse didn't take the message. Check the muse.ai tab, then press Continue.");
 
       const onAbort = () => tell(tabId, { op: "stop" }).catch(() => {});
       if (signal) signal.addEventListener("abort", onAbort, { once: true });
+      let seen = null; // the side chat this request landed in, for archiving after a Stop
       try {
         const t0 = Date.now();
         let lastText = "";
@@ -538,6 +601,7 @@ globalThis.__netscopeMuse = (() => {
             continue;
           }
           missing = 0;
+          if (r && r.found && r.thread && r.thread !== "new") seen = r.thread;
           const now = Date.now();
           if (r && r.found && r.text !== lastText) {
             lastText = r.text;
@@ -545,7 +609,9 @@ globalThis.__netscopeMuse = (() => {
             if (hooks.onPartial) hooks.onPartial(lastText);
           }
           if (r && r.found && r.count > 0 && !r.busy && !r.streaming && now - lastChange >= 1800) {
-            return { text: lastText, thread: r.thread, url: r.url };
+            // A reply without tool calls is a final answer: its side chat gets archived.
+            const p = parse(lastText, req.known ? new Set(req.known) : null);
+            return { text: lastText, thread: r.thread, url: r.url, tabId, final: !p.calls.length && !p.bad };
           }
           const line = !r || !r.found ? "Sending to Muse…" : r.count ? "Muse is writing…" : r.busy ? "Muse is thinking…" : "Waiting for Muse…";
           if (line !== lastSay) say((lastSay = line));
@@ -554,6 +620,9 @@ globalThis.__netscopeMuse = (() => {
           if (now - lastChange > IDLE_LIMIT) throw museError("stalled", "Muse has been silent for 8 minutes. Check the muse.ai tab, then press Continue.");
           if (now - t0 > HARD_LIMIT) throw museError("timeout", "Muse took more than 20 minutes on one reply. Check the muse.ai tab, then press Continue.");
         }
+      } catch (err) {
+        if (err && err.name === "AbortError") Object.assign(err, { thread: seen, tabId });
+        throw err;
       } finally {
         if (signal) signal.removeEventListener("abort", onAbort);
       }

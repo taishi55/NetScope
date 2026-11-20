@@ -77,12 +77,13 @@ How it works:
 - A small script on muse.ai fills Muse's message box, presses **Send**, and reads Muse's reply
   back as Markdown (tables, code and lists included). The background worker does all the waiting,
   so a hidden or minimized tab does not stall a reply.
-- Each NetScope conversation gets its own Muse **side chat**, so your main Muse chat stays
-  clean. A follow-up sends only the new turn; Muse keeps the history. Editing or retrying an
-  earlier question starts a fresh side chat with a condensed replay. **New chat** in NetScope
-  always starts a new side chat, so nothing from an earlier conversation carries over.
-- Each flow's AI steps get their own side chat too, marked so every step is a separate task,
-  and renewed every 20 steps so old items can't pile up and confuse later ones.
+- **Like a stateless API:** every question you send starts a fresh Muse **side chat** holding
+  NetScope's rules and a condensed replay of your NetScope chat — NetScope keeps the history,
+  not Muse — so each answer starts from the same, predictable context. The tool steps of that
+  question stay in its side chat. AI steps in flows work the same way, one fresh side chat each.
+  Your main Muse chat is never used.
+- Once the answer is read, NetScope **archives** that side chat, so your own side chats stay easy
+  to find; Muse → side chats → **Show archived chats** brings them back.
 - Muse also has account-wide memory, which can't be switched off per chat. Every side chat
   therefore tells Muse to treat it as a fresh conversation: not to use its memories or other
   chats, and not to save anything from it to memory. That is an instruction, not a switch —
@@ -90,12 +91,14 @@ How it works:
 - Muse has no function-calling API, so the first message of each side chat lists NetScope's
   tools and Muse calls them with fenced ` ```tool ` JSON blocks. NetScope runs them exactly as
   it does for Kimi (same tools, same approval setting) and sends the results back.
-- **Stop** in NetScope presses Muse's Stop button too. NetScope never approves anything Muse
-  asks you to approve, and never touches anything else on the page.
+- **Stop** in NetScope presses Muse's Stop button too. NetScope clicks only Send, Stop and, on
+  its own finished side chats, Archive — never Delete, never anything Muse asks you to approve,
+  nothing else on the page. It never types over, or navigates away from, a message you are
+  writing in Muse.
 
-Limits: the conversation lives in your Muse history; Muse is only available where Meta offers
-it; Muse's own usage limits apply (every tool step is a Muse message, so Muse is asked to batch
-independent calls); Meta may use your Muse chats to improve its models unless you turn off
+Limits: the conversations live in your Muse history (archived); Muse is only available where
+Meta offers it; Muse's own usage limits apply (every tool step is a Muse message, so Muse is asked
+to batch independent calls, and every question resends NetScope's rules, about 25k characters); Meta may use your Muse chats to improve its models unless you turn off
 **Help improve our AI models** in Muse → Settings → Data controls; and if Chrome discards or freezes the tab (Memory or Energy
 Saver), NetScope reloads it or tells you what to do. Muse has no thinking-depth setting or
 token meter.
